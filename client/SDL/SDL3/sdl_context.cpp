@@ -1797,6 +1797,12 @@ bool SdlContext::setCursor(const rdpPointer* cursor)
 	if (!contains(cursor))
 		return true;
 
+	/* Keep the outgoing sprite alive until its replacement is on screen.
+	 * SDL_DestroyCursor() on the active cursor falls back to the default
+	 * system cursor, so releasing it first makes that arrow flicker through
+	 * between the frames of an animated cursor -- and its (0,0) hotspot
+	 * makes the pointer appear to jump while it shows. */
+	auto previous = std::move(_cursor);
 	_cursor = { sdl_Pointer_Copy(cursor), sdl_PointerFreeCopyAll };
 	return setCursor(CURSOR_IMAGE);
 }
