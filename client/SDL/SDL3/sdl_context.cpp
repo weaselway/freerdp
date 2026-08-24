@@ -898,7 +898,10 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 	auto size = window.rect();
 
 	std::unique_lock lock(_critical);
-	auto surface = _primary.get();
+
+	/* While gfxredir drives the output the pixels live in the server's shared
+	 * memory, so upload from there instead of the gdi primary buffer. */
+	auto surface = _gfxRedirSurface ? _gfxRedirSurface.get() : _primary.get();
 
 	if (useLocalScale())
 	{
@@ -1504,6 +1507,132 @@ bool SdlContext::useLocalScale() const
 	const auto fs = freerdp_settings_get_bool(context()->settings, FreeRDP_Fullscreen);
 	const auto multimon = freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon);
 	return !dynResize && !fs && !multimon;
+}
+
+/* GFXREDIR_BUFFER_PIXEL_FORMAT_* -> SDL. "ARGB_8888" names the DWORD, so the
+ * bytes are B,G,R,A on little endian, which SDL calls BGRA32. */
+static SDL_PixelFormat gfxRedirPixelFormat(UINT32 format)
+{
+	switch (format)
+	{
+		case GFXREDIR_BUFFER_PIXEL_FORMAT_ARGB_8888:
+			return SDL_PIXELFORMAT_BGRA32;
+		case GFXREDIR_BUFFER_PIXEL_FORMAT_XRGB_8888:
+			return SDL_PIXELFORMAT_BGRX32;
+		default:
+			return SDL_PIXELFORMAT_UNKNOWN;
+	}
+}
+
+bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
+                                      const GFXREDIR_PRESENT_BUFFER_PDU* present)
+{
+	WINPR_ASSERT(redir);
+	WINPR_ASSERT(present);
+
+	GFXREDIR_BUFFER_MAPPING mapping = {};
+	if (!redir->GetBufferMapping(redir, present->bufferId, &mapping))
+		return false; /* already logged by the channel */
+
+	const auto format = gfxRedirPixelFormat(mapping.format);
+	if (format == SDL_PIXELFORMAT_UNKNOWN)
+	{
+		WLog_Print(getWLog(), WLOG_ERROR, "gfxredir: unsupported pixel format %" PRIu32,
+		           mapping.format);
+		return false;
+	}
+
+	const auto width = static_cast<int>(mapping.width);
+	const auto height = static_cast<int>(mapping.height);
+	const auto stride = static_cast<int>(mapping.stride);
+
+	std::unique_lock lock(_critical);
+
+	/* SDL_CreateSurfaceFrom does not copy, it just wraps the pointer, so this
+	 * only has to be redone when the server hands us different memory. */
+	if (!_gfxRedirSurface || (_gfxRedirData != mapping.data) || (_gfxRedirWidth != width) ||
+	    (_gfxRedirHeight != height) || (_gfxRedirStride != stride) || (_gfxRedirFormat != format))
+	{
+		_gfxRedirSurface = SDLSurfacePtr(
+		    SDL_CreateSurfaceFrom(width, height, format, const_cast<void*>(mapping.data), stride),
+		    SDL_DestroySurface);
+		if (!_gfxRedirSurface)
+		{
+			WLog_Print(getWLog(), WLOG_ERROR, "gfxredir: SDL_CreateSurfaceFrom failed: %s",
+			           SDL_GetError());
+			return false;
+		}
+
+		SDL_SetSurfaceBlendMode(_gfxRedirSurface.get(), SDL_BLENDMODE_NONE);
+		_gfxRedirData = mapping.data;
+		_gfxRedirWidth = width;
+		_gfxRedirHeight = height;
+		_gfxRedirStride = stride;
+		_gfxRedirFormat = format;
+	}
+
+	/* Clip to the buffer; the server's target size can lead the buffer by a
+	 * frame around a resize. */
+	const auto& dirty = present->dirtyRect;
+	if ((static_cast<int>(dirty.left) >= width) || (static_cast<int>(dirty.top) >= height))
+		return false;
+
+	SDL_Rect rect{ static_cast<int>(dirty.left), static_cast<int>(dirty.top),
+		           std::min(static_cast<int>(dirty.width), width - static_cast<int>(dirty.left)),
+		           std::min(static_cast<int>(dirty.height),
+		                    height - static_cast<int>(dirty.top)) };
+	if ((rect.w <= 0) || (rect.h <= 0))
+		return false;
+
+	/* Only the newest present matters; the server keeps one in flight, and if
+	 * an older ack were still pending we would be acking the wrong frame. */
+	_gfxRedir = redir;
+	_gfxRedirAckPending = true;
+	_gfxRedirAckWindowId = present->windowId;
+	_gfxRedirAckPresentId = present->presentId;
+
+	lock.unlock();
+
+	push({ rect });
+	return sdl_push_user_event(SDL_EVENT_USER_UPDATE);
+}
+
+/* Called on the SDL thread once the texture upload has read the shared memory.
+ * Only now may the server reuse the buffer. */
+void SdlContext::gfxRedirCompletePresent()
+{
+	GfxRedirClientContext* redir = nullptr;
+	GFXREDIR_PRESENT_BUFFER_ACK_PDU ack = {};
+
+	{
+		std::unique_lock lock(_critical);
+		if (!_gfxRedirAckPending || !_gfxRedir)
+			return;
+
+		redir = _gfxRedir;
+		ack.windowId = _gfxRedirAckWindowId;
+		ack.presentId = _gfxRedirAckPresentId;
+		_gfxRedirAckPending = false;
+	}
+
+	if (redir->PresentBufferAck(redir, &ack) != CHANNEL_RC_OK)
+		WLog_Print(getWLog(), WLOG_ERROR, "gfxredir: failed to ack present %" PRIu64,
+		           ack.presentId);
+}
+
+/* The pool is about to go away, so the surface wrapping it must not outlive it. */
+void SdlContext::gfxRedirReset()
+{
+	std::unique_lock lock(_critical);
+
+	_gfxRedirSurface.reset();
+	_gfxRedirData = nullptr;
+	_gfxRedirWidth = 0;
+	_gfxRedirHeight = 0;
+	_gfxRedirStride = 0;
+	_gfxRedirFormat = SDL_PIXELFORMAT_UNKNOWN;
+	_gfxRedir = nullptr;
+	_gfxRedirAckPending = false;
 }
 
 bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)

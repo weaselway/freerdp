@@ -28,6 +28,7 @@
 #include <atomic>
 
 #include <freerdp/freerdp.h>
+#include <freerdp/client/gfxredir.h>
 
 #include <SDL3/SDL.h>
 
@@ -112,6 +113,16 @@ class SdlContext
 
 	[[nodiscard]] bool drawToWindows(const std::vector<SDL_Rect>& rects = {});
 	[[nodiscard]] bool drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects = {});
+
+	/* gfxredir presents straight out of the server's shared memory: the
+	 * texture upload reads the mapped pool, with no copy into the gdi primary
+	 * buffer on the way. queuePresent() runs on the channel thread and only
+	 * publishes the buffer; completePresent() runs on the SDL thread once the
+	 * upload is done and releases the buffer back to the server. */
+	[[nodiscard]] bool gfxRedirQueuePresent(GfxRedirClientContext* redir,
+	                                        const GFXREDIR_PRESENT_BUFFER_PDU* present);
+	void gfxRedirCompletePresent();
+	void gfxRedirReset();
 	[[nodiscard]] bool minimizeAllWindows();
 	[[nodiscard]] int exitCode() const;
 	[[nodiscard]] SDL_PixelFormat pixelFormat() const;
@@ -227,6 +238,21 @@ class SdlContext
 	using SDLSurfacePtr = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>;
 
 	SDLSurfacePtr _primary;
+
+	/* Zero-copy view of the gfxredir shared memory buffer currently being
+	 * presented, used in place of _primary while gfxredir drives the output.
+	 * Guarded by _critical together with the ack bookkeeping. */
+	SDLSurfacePtr _gfxRedirSurface{ nullptr, SDL_DestroySurface };
+	const void* _gfxRedirData = nullptr;
+	int _gfxRedirWidth = 0;
+	int _gfxRedirHeight = 0;
+	int _gfxRedirStride = 0;
+	SDL_PixelFormat _gfxRedirFormat = SDL_PIXELFORMAT_UNKNOWN;
+
+	GfxRedirClientContext* _gfxRedir = nullptr;
+	bool _gfxRedirAckPending = false;
+	UINT64 _gfxRedirAckWindowId = 0;
+	UINT64 _gfxRedirAckPresentId = 0;
 	SDL_FPoint _localScale{ 1.0f, 1.0f };
 
 	sdlDispContext _disp;

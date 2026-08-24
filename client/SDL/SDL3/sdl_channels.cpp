@@ -31,9 +31,10 @@
 #include "sdl_context.hpp"
 #include "sdl_disp.hpp"
 
-/* gfxredir: shared-memory graphics redirection. Nothing consumes the buffers
- * yet; for now the client only reports what the server sends so the two logs
- * can be lined up. Callbacks run on the drdynvc receive thread. */
+/* gfxredir: shared-memory graphics redirection. The server writes frames into a
+ * shared memory pool and tells us which rectangle changed; the SDL thread then
+ * uploads that rectangle to its texture straight out of the mapping, with no
+ * intermediate copy. Callbacks run on the drdynvc receive thread. */
 
 static UINT sdl_gfxredir_caps_confirm(GfxRedirClientContext* context, UINT32 version)
 {
@@ -64,6 +65,8 @@ static UINT sdl_gfxredir_close_pool(GfxRedirClientContext* context,
 		return CHANNEL_RC_OK;
 	WLog_Print(sdl->getWLog(), WLOG_INFO, "gfxredir: ClosePool poolId=%" PRIu64,
 	           closePool->poolId);
+	/* Our surface wraps this pool's memory; it must not outlive the mapping. */
+	sdl->gfxRedirReset();
 	return CHANNEL_RC_OK;
 }
 
@@ -89,6 +92,7 @@ static UINT sdl_gfxredir_destroy_buffer(GfxRedirClientContext* context,
 		return CHANNEL_RC_OK;
 	WLog_Print(sdl->getWLog(), WLOG_INFO, "gfxredir: DestroyBuffer bufferId=%" PRIu64,
 	           destroyBuffer->bufferId);
+	sdl->gfxRedirReset();
 	return CHANNEL_RC_OK;
 }
 
@@ -98,7 +102,7 @@ static UINT sdl_gfxredir_present_buffer(GfxRedirClientContext* context,
 	auto sdl = static_cast<SdlContext*>(context->custom);
 	if (!sdl) /* channel already disconnected */
 		return CHANNEL_RC_OK;
-	WLog_Print(sdl->getWLog(), WLOG_INFO,
+	WLog_Print(sdl->getWLog(), WLOG_DEBUG,
 	           "gfxredir: PresentBuffer presentId=%" PRIu64 " bufferId=%" PRIu64
 	           " rect=%" PRIu32 "x%" PRIu32 "+%" PRIu32 "+%" PRIu32 " target=%" PRIu32
 	           "x%" PRIu32,
@@ -106,6 +110,19 @@ static UINT sdl_gfxredir_present_buffer(GfxRedirClientContext* context,
 	           presentBuffer->dirtyRect.height, presentBuffer->dirtyRect.left,
 	           presentBuffer->dirtyRect.top, presentBuffer->targetWidth,
 	           presentBuffer->targetHeight);
+
+	/* Publishes the shared memory to the SDL thread, which uploads it to the
+	 * texture and then acks. Nothing is copied here. */
+	if (!sdl->gfxRedirQueuePresent(context, presentBuffer))
+	{
+		/* Nothing will be drawn, so nothing will ack either -- release the
+		 * frame now or the server stops sending. */
+		GFXREDIR_PRESENT_BUFFER_ACK_PDU ack = {};
+		ack.windowId = presentBuffer->windowId;
+		ack.presentId = presentBuffer->presentId;
+		return context->PresentBufferAck(context, &ack);
+	}
+
 	return CHANNEL_RC_OK;
 }
 
@@ -141,6 +158,9 @@ void sdl_OnChannelConnectedEventHandler(void* context, const ChannelConnectedEve
 		WINPR_ASSERT(redir);
 
 		redir->custom = sdl;
+		/* The texture upload happens later, on the SDL thread, so the channel
+		 * must not ack on our behalf when the callback returns. */
+		redir->deferPresentBufferAck = TRUE;
 		redir->CapsConfirm = sdl_gfxredir_caps_confirm;
 		redir->OpenPool = sdl_gfxredir_open_pool;
 		redir->ClosePool = sdl_gfxredir_close_pool;
@@ -189,6 +209,7 @@ void sdl_OnChannelDisconnectedEventHandler(void* context, const ChannelDisconnec
 		WINPR_ASSERT(redir);
 
 		WLog_Print(sdl->getWLog(), WLOG_INFO, "gfxredir channel disconnected");
+		sdl->gfxRedirReset();
 		redir->custom = nullptr;
 	}
 	else

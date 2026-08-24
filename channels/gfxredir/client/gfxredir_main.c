@@ -36,6 +36,15 @@
 
 #define TAG CHANNELS_TAG("gfxredir.client")
 
+/* The server only ever needs a handful; a linear scan is cheaper than a map. */
+#define GFXREDIR_MAX_BUFFERS 8
+
+typedef struct
+{
+	BOOL used;
+	GFXREDIR_CREATE_BUFFER_PDU desc;
+} GFXREDIR_BUFFER;
+
 typedef struct
 {
 	GENERIC_DYNVC_PLUGIN base; /* must be the first element */
@@ -53,6 +62,8 @@ typedef struct
 	HANDLE poolMapping;
 	void* poolAddr;
 	UINT64 poolSize;
+
+	GFXREDIR_BUFFER buffers[GFXREDIR_MAX_BUFFERS];
 } GFXREDIR_PLUGIN;
 
 static GFXREDIR_PLUGIN* gfxredir_get_plugin(GENERIC_CHANNEL_CALLBACK* callback)
@@ -241,6 +252,128 @@ static UINT gfxredir_recv_error(GENERIC_CHANNEL_CALLBACK* callback, wStream* s)
 	return CHANNEL_RC_OK;
 }
 
+static void gfxredir_track_buffer(GFXREDIR_PLUGIN* gfxredir,
+                                  const GFXREDIR_CREATE_BUFFER_PDU* pdu)
+{
+	GFXREDIR_BUFFER* slot = nullptr;
+
+	/* A repeated bufferId replaces the old description. */
+	for (size_t i = 0; i < GFXREDIR_MAX_BUFFERS; i++)
+	{
+		if (gfxredir->buffers[i].used && (gfxredir->buffers[i].desc.bufferId == pdu->bufferId))
+		{
+			slot = &gfxredir->buffers[i];
+			break;
+		}
+	}
+
+	if (!slot)
+	{
+		for (size_t i = 0; i < GFXREDIR_MAX_BUFFERS; i++)
+		{
+			if (!gfxredir->buffers[i].used)
+			{
+				slot = &gfxredir->buffers[i];
+				break;
+			}
+		}
+	}
+
+	if (!slot)
+	{
+		WLog_ERR(TAG, "no free buffer slot for bufferId=%" PRIu64, pdu->bufferId);
+		return;
+	}
+
+	slot->used = TRUE;
+	slot->desc = *pdu;
+}
+
+static void gfxredir_forget_buffer(GFXREDIR_PLUGIN* gfxredir, UINT64 bufferId)
+{
+	for (size_t i = 0; i < GFXREDIR_MAX_BUFFERS; i++)
+	{
+		if (gfxredir->buffers[i].used && (gfxredir->buffers[i].desc.bufferId == bufferId))
+			gfxredir->buffers[i].used = FALSE;
+	}
+}
+
+static void gfxredir_forget_pool_buffers(GFXREDIR_PLUGIN* gfxredir, UINT64 poolId)
+{
+	for (size_t i = 0; i < GFXREDIR_MAX_BUFFERS; i++)
+	{
+		if (gfxredir->buffers[i].used && (gfxredir->buffers[i].desc.poolId == poolId))
+			gfxredir->buffers[i].used = FALSE;
+	}
+}
+
+/**
+ * Resolve a buffer to a pointer into the mapped pool, validating that the
+ * geometry the server described actually fits inside the mapping. The server
+ * is trusted but not blindly: a bad offset/stride/height would otherwise read
+ * off the end of the section.
+ */
+static BOOL gfxredir_get_buffer_mapping(GfxRedirClientContext* context, UINT64 bufferId,
+                                        GFXREDIR_BUFFER_MAPPING* mapping)
+{
+	WINPR_ASSERT(context);
+	WINPR_ASSERT(mapping);
+
+	GFXREDIR_PLUGIN* gfxredir = (GFXREDIR_PLUGIN*)context->handle;
+	WINPR_ASSERT(gfxredir);
+
+	const GFXREDIR_BUFFER* buffer = nullptr;
+	for (size_t i = 0; i < GFXREDIR_MAX_BUFFERS; i++)
+	{
+		if (gfxredir->buffers[i].used && (gfxredir->buffers[i].desc.bufferId == bufferId))
+		{
+			buffer = &gfxredir->buffers[i];
+			break;
+		}
+	}
+
+	if (!buffer)
+	{
+		WLog_ERR(TAG, "unknown bufferId=%" PRIu64, bufferId);
+		return FALSE;
+	}
+
+	const GFXREDIR_CREATE_BUFFER_PDU* desc = &buffer->desc;
+
+	if (!gfxredir->poolAddr || (gfxredir->poolId != desc->poolId))
+	{
+		WLog_ERR(TAG, "pool %" PRIu64 " for bufferId=%" PRIu64 " is not mapped", desc->poolId,
+		         bufferId);
+		return FALSE;
+	}
+
+	if ((desc->height == 0) || (desc->width == 0) || (desc->stride < (4ull * desc->width)))
+	{
+		WLog_ERR(TAG, "bufferId=%" PRIu64 " has bad geometry %" PRIu32 "x%" PRIu32 " stride=%" PRIu32,
+		         bufferId, desc->width, desc->height, desc->stride);
+		return FALSE;
+	}
+
+	/* Last row only needs width pixels, not a full stride. */
+	const UINT64 span = ((UINT64)(desc->height - 1) * desc->stride) + (4ull * desc->width);
+	if ((desc->offset > gfxredir->poolSize) || (span > (gfxredir->poolSize - desc->offset)))
+	{
+		WLog_ERR(TAG,
+		         "bufferId=%" PRIu64 " does not fit its pool: offset=%" PRIu64 " span=%" PRIu64
+		         " poolSize=%" PRIu64,
+		         bufferId, desc->offset, span, gfxredir->poolSize);
+		return FALSE;
+	}
+
+	mapping->data = (const BYTE*)gfxredir->poolAddr + desc->offset;
+	mapping->size = (size_t)span;
+	mapping->stride = desc->stride;
+	mapping->width = desc->width;
+	mapping->height = desc->height;
+	mapping->format = desc->format;
+	return TRUE;
+}
+
 /* Release whatever pool mapping we are holding, if any. */
 static void gfxredir_unmap_pool(GFXREDIR_PLUGIN* gfxredir)
 {
@@ -380,13 +513,17 @@ static UINT gfxredir_recv_close_pool(GENERIC_CHANNEL_CALLBACK* callback, wStream
 	Stream_Read_UINT64(s, pdu.poolId);
 	WLog_INFO(TAG, "-> ClosePool poolId=%" PRIu64, pdu.poolId);
 
+	/* Notify before unmapping: the application may be holding a view of this
+	 * memory and needs the chance to drop it first. */
+	UINT error = CHANNEL_RC_OK;
+	if (gfxredir->context && gfxredir->context->ClosePool)
+		error = gfxredir->context->ClosePool(gfxredir->context, &pdu);
+
+	gfxredir_forget_pool_buffers(gfxredir, pdu.poolId);
 	if (gfxredir->poolId == pdu.poolId)
 		gfxredir_unmap_pool(gfxredir);
 
-	if (gfxredir->context && gfxredir->context->ClosePool)
-		return gfxredir->context->ClosePool(gfxredir->context, &pdu);
-
-	return CHANNEL_RC_OK;
+	return error;
 }
 
 /**
@@ -413,6 +550,8 @@ static UINT gfxredir_recv_create_buffer(GENERIC_CHANNEL_CALLBACK* callback, wStr
 	          " stride=%" PRIu32 " offset=%" PRIu64 " format=%" PRIu32,
 	          pdu.bufferId, pdu.poolId, pdu.width, pdu.height, pdu.stride, pdu.offset, pdu.format);
 
+	gfxredir_track_buffer(gfxredir, &pdu);
+
 	if (gfxredir->context && gfxredir->context->CreateBuffer)
 		return gfxredir->context->CreateBuffer(gfxredir->context, &pdu);
 
@@ -433,10 +572,14 @@ static UINT gfxredir_recv_destroy_buffer(GENERIC_CHANNEL_CALLBACK* callback, wSt
 	Stream_Read_UINT64(s, pdu.bufferId);
 	WLog_INFO(TAG, "-> DestroyBuffer bufferId=%" PRIu64, pdu.bufferId);
 
+	/* Notify first, then forget: see gfxredir_recv_close_pool. */
+	UINT error = CHANNEL_RC_OK;
 	if (gfxredir->context && gfxredir->context->DestroyBuffer)
-		return gfxredir->context->DestroyBuffer(gfxredir->context, &pdu);
+		error = gfxredir->context->DestroyBuffer(gfxredir->context, &pdu);
 
-	return CHANNEL_RC_OK;
+	gfxredir_forget_buffer(gfxredir, pdu.bufferId);
+
+	return error;
 }
 
 /**
@@ -632,6 +775,7 @@ static UINT gfxredir_plugin_initialize(GENERIC_DYNVC_PLUGIN* base,
 
 	context->handle = (void*)gfxredir;
 	context->PresentBufferAck = gfxredir_send_present_buffer_ack;
+	context->GetBufferMapping = gfxredir_get_buffer_mapping;
 
 	/* Published to the client application as the ChannelConnected pInterface. */
 	gfxredir->base.iface.pInterface = gfxredir->context = context;
