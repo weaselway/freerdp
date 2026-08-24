@@ -1717,6 +1717,13 @@ BOOL SdlContext::desktopResize(rdpContext* context)
 	WINPR_ASSERT(settings);
 
 	std::unique_lock lock(sdl->_critical);
+
+	/* The gfxredir surface wraps the shared-memory pool, which the server sizes
+	 * to the old desktop. It will send ClosePool and rebuild, but the ordering
+	 * of the two channels isn't guaranteed, so drop the wrapper now rather than
+	 * risk drawing the old geometry into the resized primary. */
+	sdl->gfxRedirReset();
+
 	gdi = context->gdi;
 	if (!gdi_resize(gdi, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
 	                freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight)))
