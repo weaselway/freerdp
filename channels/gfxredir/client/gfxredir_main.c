@@ -122,6 +122,52 @@ static UINT gfxredir_send_caps_advertise(GENERIC_CHANNEL_CALLBACK* callback)
 }
 
 /**
+ * Tell the server we are done with a presented buffer. Until this arrives the
+ * server keeps exactly one present outstanding and sends nothing further, so a
+ * missing ack stalls the whole stream.
+ *
+ * Exposed on the client context so an application doing asynchronous
+ * presentation can ack on its own schedule; see deferPresentBufferAck.
+ *
+ * @return 0 on success, otherwise a Win32 error code
+ */
+static UINT gfxredir_ack_present(GENERIC_CHANNEL_CALLBACK* callback, UINT64 windowId,
+                                 UINT64 presentId)
+{
+	wStream* s = gfxredir_packet_new(GFXREDIR_CMDID_PRESENT_BUFFER_ACK, 16);
+
+	if (!s)
+		return CHANNEL_RC_NO_MEMORY;
+
+	Stream_Write_UINT64(s, windowId);
+	Stream_Write_UINT64(s, presentId);
+
+	WLog_INFO(TAG, "<- PresentBufferAck presentId=%" PRIu64 " windowId=%" PRIu64, presentId,
+	          windowId);
+	return gfxredir_packet_send(callback, s);
+}
+
+/* Context entry point for applications that ack on their own schedule. */
+static UINT gfxredir_send_present_buffer_ack(GfxRedirClientContext* context,
+                                             const GFXREDIR_PRESENT_BUFFER_ACK_PDU* ack)
+{
+	WINPR_ASSERT(context);
+	WINPR_ASSERT(ack);
+
+	GFXREDIR_PLUGIN* gfxredir = (GFXREDIR_PLUGIN*)context->handle;
+	WINPR_ASSERT(gfxredir);
+
+	GENERIC_LISTENER_CALLBACK* listener = gfxredir->base.listener_callback;
+	if (!listener || !listener->channel_callback)
+	{
+		WLog_ERR(TAG, "cannot ack present, channel is not open");
+		return ERROR_INTERNAL_ERROR;
+	}
+
+	return gfxredir_ack_present(listener->channel_callback, ack->windowId, ack->presentId);
+}
+
+/**
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT gfxredir_recv_caps_confirm(GENERIC_CHANNEL_CALLBACK* callback, wStream* s)
@@ -335,9 +381,19 @@ static UINT gfxredir_recv_present_buffer(GENERIC_CHANNEL_CALLBACK* callback, wSt
 	          pdu.orientation, pdu.numOpaqueRects);
 
 	if (gfxredir->context && gfxredir->context->PresentBuffer)
-		return gfxredir->context->PresentBuffer(gfxredir->context, &pdu);
+	{
+		const UINT error = gfxredir->context->PresentBuffer(gfxredir->context, &pdu);
+		if (error)
+			return error;
+	}
 
-	return CHANNEL_RC_OK;
+	/* The server will not send another present until this is acked. An
+	 * application that keeps using the buffer past the callback opts out and
+	 * acks for itself. */
+	if (gfxredir->context && gfxredir->context->deferPresentBufferAck)
+		return CHANNEL_RC_OK;
+
+	return gfxredir_ack_present(callback, pdu.windowId, pdu.presentId);
 }
 
 /**
@@ -447,6 +503,7 @@ static UINT gfxredir_plugin_initialize(GENERIC_DYNVC_PLUGIN* base,
 	}
 
 	context->handle = (void*)gfxredir;
+	context->PresentBufferAck = gfxredir_send_present_buffer_ack;
 
 	/* Published to the client application as the ChannelConnected pInterface. */
 	gfxredir->base.iface.pInterface = gfxredir->context = context;
