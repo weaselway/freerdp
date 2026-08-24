@@ -47,6 +47,9 @@ extern "C"
 	typedef UINT (*pcGfxRedirPresentBuffer)(GfxRedirClientContext* context,
 	                                        const GFXREDIR_PRESENT_BUFFER_PDU* presentBuffer);
 
+	typedef UINT (*pcGfxRedirPresentBufferAck)(GfxRedirClientContext* context,
+	                                           const GFXREDIR_PRESENT_BUFFER_ACK_PDU* ack);
+
 	struct s_gfxredir_client_context
 	{
 		void* handle;
@@ -60,6 +63,23 @@ extern "C"
 		pcGfxRedirCreateBuffer CreateBuffer;
 		pcGfxRedirDestroyBuffer DestroyBuffer;
 		pcGfxRedirPresentBuffer PresentBuffer;
+
+		/* Client -> server. Set by the channel, called by the application. */
+		WINPR_ATTR_NODISCARD pcGfxRedirPresentBufferAck PresentBufferAck;
+
+		/**
+		 * The server allows only one present in flight per window and waits for
+		 * an ack before sending the next one, so an unacked present stalls the
+		 * stream. By default the channel acks each PRESENT_BUFFER itself, as
+		 * soon as the PresentBuffer callback returns.
+		 *
+		 * An application that consumes the buffer asynchronously should set
+		 * this to TRUE and call PresentBufferAck() once it is actually done
+		 * reading the buffer -- acking early tells the server it may reuse the
+		 * memory, which would tear. Set it from the CapsConfirm callback or
+		 * earlier; the channel reads it on every present.
+		 */
+		BOOL deferPresentBufferAck;
 	};
 
 #ifdef __cplusplus
