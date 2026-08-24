@@ -239,23 +239,36 @@ class SdlContext
 
 	SDLSurfacePtr _primary;
 
-	/* Zero-copy view of the gfxredir shared memory buffer currently being
-	 * presented, used in place of _primary while gfxredir drives the output.
-	 * Guarded by _critical together with the ack bookkeeping. */
-	SDLSurfacePtr _gfxRedirSurface{ nullptr, SDL_DestroySurface };
-	const void* _gfxRedirData = nullptr;
-	int _gfxRedirWidth = 0;
-	int _gfxRedirHeight = 0;
-	int _gfxRedirStride = 0;
-	SDL_PixelFormat _gfxRedirFormat = SDL_PIXELFORMAT_UNKNOWN;
+	/* Zero-copy views of the gfxredir shared memory buffers, one per bufferId.
+	 * The server alternates between buffers so it can prepare a frame while we
+	 * are still reading the previous one, so these are cached rather than
+	 * rebuilt per present. Guarded by _critical along with the ack queue. */
+	struct GfxRedirBuffer
+	{
+		SDLSurfacePtr surface{ nullptr, SDL_DestroySurface };
+		const void* data = nullptr;
+		int width = 0;
+		int height = 0;
+		int stride = 0;
+		SDL_PixelFormat format = SDL_PIXELFORMAT_UNKNOWN;
+	};
+
+	/* Present published by the channel thread, awaiting upload by the SDL
+	 * thread; acked once drawn. More than one can be outstanding. */
+	struct GfxRedirPending
+	{
+		UINT64 windowId = 0;
+		UINT64 presentId = 0;
+		UINT64 queuedAt = 0;
+	};
+
+	std::map<UINT64, GfxRedirBuffer> _gfxRedirBuffers;
+	SDL_Surface* _gfxRedirSurface = nullptr; /* buffer of the newest present */
 
 	GfxRedirClientContext* _gfxRedir = nullptr;
-	bool _gfxRedirAckPending = false;
-	UINT64 _gfxRedirAckWindowId = 0;
-	UINT64 _gfxRedirAckPresentId = 0;
+	std::vector<GfxRedirPending> _gfxRedirPending;
 
 	/* Tracing: how a frame moves from the channel thread to the screen. */
-	UINT64 _gfxRedirQueuedAt = 0;   /* tick when the present was published */
 	UINT64 _gfxRedirDrawnAt = 0;    /* tick when the SDL thread last uploaded */
 	UINT64 _gfxRedirDrawCount = 0;  /* uploads that read the shm surface */
 	UINT64 _gfxRedirQueueCount = 0; /* presents published */
