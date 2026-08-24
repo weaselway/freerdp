@@ -234,13 +234,32 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 					break;
 					case SDL_EVENT_USER_UPDATE:
 					{
-						std::vector<SDL_Rect> rectangles;
-						do
+						/* Drain every queued batch, but do not draw the empty
+						 * vector that terminates the queue: an empty rect list
+						 * means "refresh everything", so the old do/while
+						 * followed each update with a redundant full-screen
+						 * upload. Only fall back to a full refresh when the
+						 * event carried no rectangles at all. */
+						size_t passes = 0;
+						for (;;)
 						{
-							rectangles = sdl->pop();
+							auto rectangles = sdl->pop();
+							if (rectangles.empty())
+								break;
+
+							passes++;
 							if (!sdl->drawToWindows(rectangles))
 								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
-						} while (!rectangles.empty());
+						}
+
+						if (passes == 0)
+						{
+							if (!sdl->drawToWindows({}))
+								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
+						}
+
+						WLog_Print(sdl->getWLog(), WLOG_DEBUG,
+						           "update event drained in %" PRIuz " passes", passes);
 
 						/* The upload above is the last read of the gfxredir
 						 * shared memory, so the server may reuse it now. */

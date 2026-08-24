@@ -253,6 +253,13 @@ class SdlContext
 	bool _gfxRedirAckPending = false;
 	UINT64 _gfxRedirAckWindowId = 0;
 	UINT64 _gfxRedirAckPresentId = 0;
+
+	/* Tracing: how a frame moves from the channel thread to the screen. */
+	UINT64 _gfxRedirQueuedAt = 0;   /* tick when the present was published */
+	UINT64 _gfxRedirDrawnAt = 0;    /* tick when the SDL thread last uploaded */
+	UINT64 _gfxRedirDrawCount = 0;  /* uploads that read the shm surface */
+	UINT64 _gfxRedirQueueCount = 0; /* presents published */
+	UINT64 _gfxRedirDropCount = 0;  /* presents superseded before being drawn */
 	SDL_FPoint _localScale{ 1.0f, 1.0f };
 
 	sdlDispContext _disp;

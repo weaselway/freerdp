@@ -280,7 +280,13 @@ void SdlWindow::ensureRenderTarget()
 			return;
 		if (static_cast<int>(tw) == w && static_cast<int>(th) == h)
 			return;
+
+		SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "render target %dx%d -> %dx%d", static_cast<int>(tw),
+		            static_cast<int>(th), w, h);
 		SDL_DestroyTexture(_renderTarget);
+		/* Must not stay set: if the create below fails we would keep using a
+		 * destroyed texture. */
+		_renderTarget = nullptr;
 	}
 
 	_renderTarget =
@@ -494,6 +500,12 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 	if (!_renderer || !surface)
 		return false;
 
+	/* Before rendering into it, not after: updateSurface() used to be the only
+	 * caller, so a missing or stale-sized target meant this blit went to the
+	 * window backbuffer instead and was then overwritten by the target's older
+	 * contents -- one frame behind, every frame. */
+	ensureRenderTarget();
+
 	/* Lazily create or recreate the persistent GDI texture */
 	if (!_gdiTexture || _gdiTextureW != surface->w || _gdiTextureH != surface->h)
 	{
@@ -542,15 +554,41 @@ void SdlWindow::updateSurface()
 	if (!_renderer)
 		return;
 
-	ensureRenderTarget();
+	/* blit() creates the target before rendering into it, so normally there is
+	 * nothing to do here. Only create it if it is missing entirely -- calling
+	 * ensureRenderTarget() unconditionally would destroy and recreate it on a
+	 * size change, discarding exactly the content we are about to present. */
+	if (!_renderTarget)
+	{
+		ensureRenderTarget();
+		if (!_renderTarget)
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: no render target");
+			return;
+		}
+	}
 
-	/* Copy accumulated render target to screen and present */
+	/* Copy accumulated render target to screen and present. Each step is
+	 * logged on failure: these used to return silently, which looks exactly
+	 * like a healthy draw path that never reaches the screen. */
 	if (!SDL_SetRenderTarget(_renderer, nullptr))
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: SDL_SetRenderTarget: %s",
+		             SDL_GetError());
 		return;
+	}
 	if (!SDL_RenderTexture(_renderer, _renderTarget, nullptr, nullptr))
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: SDL_RenderTexture: %s",
+		             SDL_GetError());
 		return;
+	}
 	if (!SDL_RenderPresent(_renderer))
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: SDL_RenderPresent: %s",
+		             SDL_GetError());
 		return;
+	}
 }
 
 SdlWindow SdlWindow::create(SDL_DisplayID id, const std::string& title, Uint32 flags, Uint32 width,

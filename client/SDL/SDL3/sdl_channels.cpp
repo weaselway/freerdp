@@ -116,7 +116,13 @@ static UINT sdl_gfxredir_present_buffer(GfxRedirClientContext* context,
 	if (!sdl->gfxRedirQueuePresent(context, presentBuffer))
 	{
 		/* Nothing will be drawn, so nothing will ack either -- release the
-		 * frame now or the server stops sending. */
+		 * frame now or the server stops sending. Loud on purpose: acking
+		 * without drawing looks exactly like a healthy stream from the
+		 * server's side while the screen never changes. */
+		WLog_Print(sdl->getWLog(), WLOG_WARN,
+		           "gfxredir: dropping present %" PRIu64 ", acking without drawing",
+		           presentBuffer->presentId);
+
 		GFXREDIR_PRESENT_BUFFER_ACK_PDU ack = {};
 		ack.windowId = presentBuffer->windowId;
 		ack.presentId = presentBuffer->presentId;

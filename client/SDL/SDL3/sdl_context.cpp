@@ -901,7 +901,31 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 
 	/* While gfxredir drives the output the pixels live in the server's shared
 	 * memory, so upload from there instead of the gdi primary buffer. */
-	auto surface = _gfxRedirSurface ? _gfxRedirSurface.get() : _primary.get();
+	const bool fromSharedMemory = static_cast<bool>(_gfxRedirSurface);
+	auto surface = fromSharedMemory ? _gfxRedirSurface.get() : _primary.get();
+
+	if (fromSharedMemory)
+	{
+		_gfxRedirDrawnAt = GetTickCount64();
+		_gfxRedirDrawCount++;
+
+		if (rects.empty())
+		{
+			WLog_Print(getWLog(), WLOG_DEBUG,
+			           "gfxredir: draw window %" PRIu32 " full %dx%d (present %" PRIu64 ")",
+			           window.id(), surface->w, surface->h, _gfxRedirAckPresentId);
+		}
+		else
+		{
+			for (const auto& r : rects)
+			{
+				WLog_Print(getWLog(), WLOG_DEBUG,
+				           "gfxredir: draw window %" PRIu32 " rect=%dx%d+%d+%d (present %" PRIu64
+				           ")",
+				           window.id(), r.w, r.h, r.x, r.y, _gfxRedirAckPresentId);
+			}
+		}
+	}
 
 	if (useLocalScale())
 	{
@@ -1586,12 +1610,34 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 
 	/* Only the newest present matters; the server keeps one in flight, and if
 	 * an older ack were still pending we would be acking the wrong frame. */
+	if (_gfxRedirAckPending)
+	{
+		/* Should not happen: the server waits for our ack before sending the
+		 * next present. If it does, a frame was published but never drawn. */
+		_gfxRedirDropCount++;
+		WLog_Print(getWLog(), WLOG_WARN,
+		           "gfxredir: present %" PRIu64 " superseded %" PRIu64 " before it was drawn",
+		           present->presentId, _gfxRedirAckPresentId);
+	}
+
 	_gfxRedir = redir;
 	_gfxRedirAckPending = true;
 	_gfxRedirAckWindowId = present->windowId;
 	_gfxRedirAckPresentId = present->presentId;
+	_gfxRedirQueuedAt = GetTickCount64();
+	_gfxRedirQueueCount++;
+
+	const auto queueCount = _gfxRedirQueueCount;
+	const auto drawCount = _gfxRedirDrawCount;
+	const auto dropCount = _gfxRedirDropCount;
 
 	lock.unlock();
+
+	WLog_Print(getWLog(), WLOG_DEBUG,
+	           "gfxredir: queue present %" PRIu64 " rect=%dx%d+%d+%d (queued=%" PRIu64
+	           " drawn=%" PRIu64 " dropped=%" PRIu64 ")",
+	           present->presentId, rect.w, rect.h, rect.x, rect.y, queueCount, drawCount,
+	           dropCount);
 
 	push({ rect });
 	return sdl_push_user_event(SDL_EVENT_USER_UPDATE);
@@ -1604,6 +1650,9 @@ void SdlContext::gfxRedirCompletePresent()
 	GfxRedirClientContext* redir = nullptr;
 	GFXREDIR_PRESENT_BUFFER_ACK_PDU ack = {};
 
+	UINT64 queuedAt = 0;
+	UINT64 drawnAt = 0;
+
 	{
 		std::unique_lock lock(_critical);
 		if (!_gfxRedirAckPending || !_gfxRedir)
@@ -1612,8 +1661,17 @@ void SdlContext::gfxRedirCompletePresent()
 		redir = _gfxRedir;
 		ack.windowId = _gfxRedirAckWindowId;
 		ack.presentId = _gfxRedirAckPresentId;
+		queuedAt = _gfxRedirQueuedAt;
+		drawnAt = _gfxRedirDrawnAt;
 		_gfxRedirAckPending = false;
 	}
+
+	const auto now = GetTickCount64();
+	WLog_Print(getWLog(), WLOG_DEBUG,
+	           "gfxredir: ack present %" PRIu64 " queue->draw=%" PRIu64 "ms draw->ack=%" PRIu64
+	           "ms total=%" PRIu64 "ms",
+	           ack.presentId, (drawnAt > queuedAt) ? (drawnAt - queuedAt) : 0,
+	           (now > drawnAt) ? (now - drawnAt) : 0, now - queuedAt);
 
 	if (redir->PresentBufferAck(redir, &ack) != CHANNEL_RC_OK)
 		WLog_Print(getWLog(), WLOG_ERROR, "gfxredir: failed to ack present %" PRIu64,
