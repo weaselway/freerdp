@@ -17,9 +17,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <SDL3/SDL_render.h>
 #include <limits>
 #include <sstream>
 #include <cmath>
+#include <utility>
 
 #include "sdl_window.hpp"
 #include "sdl_utils.hpp"
@@ -53,6 +55,15 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	std::ignore = SDL_SyncWindow(_window);
 
 	_renderer = SDL_CreateRenderer(_window, nullptr);
+
+	/* SDL3 creates renderers with vsync disabled, so presents tear. Enabling it
+	 * makes SDL_RenderPresent block until the next refresh, which throttles the
+	 * update path in updateSurface() to the display rate. */
+	if (_renderer)
+	{
+		if (!SDL_SetRenderVSync(_renderer, 1))
+			SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_SetRenderVSync: %s", SDL_GetError());
+	}
 
 	std::ignore = resizeToScale();
 
@@ -533,6 +544,15 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 		return false;
 	}
 
+	if (showStats())
+	{
+		/* The dirty region, not the whole surface: this is what was actually
+		 * handed over, so it tracks the incremental path rather than the
+		 * framebuffer size. */
+		_statsBlits++;
+		_statsBytes += 1ull * srcRect.w * srcRect.h * static_cast<unsigned>(bpp);
+	}
+
 	/* Render onto persistent render target to accumulate dirty rects */
 	if (!SDL_SetRenderTarget(_renderer, _renderTarget))
 		return false;
@@ -546,11 +566,117 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_RenderTexture: %s", SDL_GetError());
 		return false;
 	}
+
+	if (showDamage())
+		_damageRects.push_back(dstRect);
+
 	return true;
+}
+
+bool SdlWindow::showDamage()
+{
+	static const bool enabled = []()
+	{
+		const auto* env = SDL_getenv("FREERDP_SDL_SHOW_DAMAGE");
+		return (env != nullptr) && (SDL_strcmp(env, "0") != 0);
+	}();
+	return enabled;
+}
+
+bool SdlWindow::showStats()
+{
+	static const bool enabled = []()
+	{
+		const auto* env = SDL_getenv("FREERDP_SDL_SHOW_STATS");
+		return (env != nullptr) && (SDL_strcmp(env, "0") != 0);
+	}();
+	return enabled;
+}
+
+float SdlWindow::statsScale()
+{
+	/* The built-in debug font is 8px, which is unreadable on a HiDPI panel, so
+	 * the env value doubles as a text scale. Anything non-numeric keeps the
+	 * default, so FREERDP_SDL_SHOW_STATS=1 stays a plain "on". */
+	static const float scale = []()
+	{
+		const auto* env = SDL_getenv("FREERDP_SDL_SHOW_STATS");
+		if (env == nullptr)
+			return 2.0f;
+		const auto val = SDL_atof(env);
+		if (val <= 0.0)
+			return 2.0f;
+		return static_cast<float>(val);
+	}();
+	return scale;
+}
+
+void SdlWindow::renderStats()
+{
+	const auto now = SDL_GetTicksNS();
+	if (_statsWindowStart == 0)
+		_statsWindowStart = now;
+
+	/* Recompute at most twice a second: at frame rate the numbers flicker too
+	 * fast to read, and the averaging is what makes them meaningful. */
+	const auto elapsed = now - _statsWindowStart;
+	if (elapsed >= 500000000ull)
+	{
+		const auto secs = static_cast<double>(elapsed) / 1000000000.0;
+		const auto fps = static_cast<double>(_statsFrames) / secs;
+		const auto mbps = static_cast<double>(_statsBytes) / secs / (1024.0 * 1024.0);
+		const auto bpf = (_statsFrames > 0) ? (_statsBlits / _statsFrames) : _statsBlits;
+
+		char buffer[128] = { 0 };
+		(void)SDL_snprintf(buffer, sizeof(buffer),
+		                   "%5.1f fps  %7.2f MiB/s  %llu blits/frame  %dx%d", fps, mbps,
+		                   static_cast<unsigned long long>(bpf), _gdiTextureW, _gdiTextureH);
+		_statsText = buffer;
+
+		_statsWindowStart = now;
+		_statsFrames = 0;
+		_statsBlits = 0;
+		_statsBytes = 0;
+	}
+
+	if (_statsText.empty())
+		return;
+
+	const auto scale = statsScale();
+	float sx = 1.0f;
+	float sy = 1.0f;
+	(void)SDL_GetRenderScale(_renderer, &sx, &sy);
+	if (!SDL_SetRenderScale(_renderer, scale, scale))
+		return;
+
+	/* Backing box, so the text stays legible over arbitrary desktop content.
+	 * Coordinates are in scaled units from here on. */
+	const auto chars = static_cast<float>(_statsText.size());
+	const SDL_FRect box{ 2.0f, 2.0f,
+		                 chars * static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 8.0f,
+		                 static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 8.0f };
+	SDL_BlendMode blend = SDL_BLENDMODE_NONE;
+	(void)SDL_GetRenderDrawBlendMode(_renderer, &blend);
+
+	if (SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND) &&
+	    SDL_SetRenderDrawColor(_renderer, 0x00, 0x00, 0x00, 0xc0))
+		(void)SDL_RenderFillRect(_renderer, &box);
+
+	if (SDL_SetRenderDrawColor(_renderer, 0x00, 0xff, 0x00, 0xff))
+		(void)SDL_RenderDebugText(_renderer, box.x + 4.0f, box.y + 4.0f, _statsText.c_str());
+
+	(void)SDL_SetRenderDrawBlendMode(_renderer, blend);
+	(void)SDL_SetRenderScale(_renderer, sx, sy);
 }
 
 void SdlWindow::updateSurface()
 {
+	/* Taken by move so the rects are dropped even if a step below bails out;
+	 * otherwise a failed present would leave them to be drawn again next
+	 * frame, which is exactly what this is meant to show is not happening. */
+	const auto damage = std::move(_damageRects);
+	_damageRects.clear();
+
 	if (!_renderer)
 		return;
 
@@ -583,6 +709,41 @@ void SdlWindow::updateSurface()
 		             SDL_GetError());
 		return;
 	}
+
+	/* Tint what was updated this frame.
+	 *
+	 * Deliberately drawn here, onto the backbuffer, rather than into
+	 * _renderTarget: the target accumulates dirty rects across frames, so a
+	 * tint drawn there would never be painted over and the whole screen would
+	 * slowly turn pink. On the backbuffer it lives for exactly this present,
+	 * and the next frame starts again from a clean copy of the target.
+	 *
+	 * The target is created at the window's pixel size and stretched over the
+	 * whole output above, so the blit coordinates carry over unchanged. */
+	if (!damage.empty())
+	{
+		std::vector<SDL_FRect> rects;
+		rects.reserve(damage.size());
+		for (const auto& r : damage)
+			rects.push_back({ static_cast<float>(r.x), static_cast<float>(r.y),
+			                  static_cast<float>(r.w), static_cast<float>(r.h) });
+
+		if (!SDL_SetRenderDrawColor(_renderer, 0xFF, 0x00, 0x80, 0xff) ||
+		    !SDL_RenderRects(_renderer, rects.data(), static_cast<int>(rects.size())))
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: damage overlay: %s",
+			             SDL_GetError());
+		}
+	}
+
+	/* Drawn onto the backbuffer for the same reason as the damage tint: the
+	 * render target accumulates across frames, so an overlay there would smear. */
+	if (showStats())
+	{
+		_statsFrames++;
+		renderStats();
+	}
+
 	if (!SDL_RenderPresent(_renderer))
 	{
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: SDL_RenderPresent: %s",

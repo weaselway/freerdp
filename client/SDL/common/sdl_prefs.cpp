@@ -172,7 +172,7 @@ void SdlPref::print_config_file_help(int version)
 	std::cout << "    SDL_KeyModMask" << std::endl;
 	std::cout << "      Defines the key combination required for SDL client shortcuts."
 	          << std::endl;
-	std::cout << "      Default KMOD_RSHIFT" << std::endl;
+	std::cout << "      Default KMOD_RSHIFT, KMOD_RCTRL" << std::endl;
 	std::cout << "      An array of SDL_Keymod strings as defined at "
 	             ""
 	          << url << "/SDL_Keymod" << std::endl;

@@ -419,7 +419,8 @@ bool sdlInput::prefToEnabled()
 {
 	bool enable = true;
 	const auto& m = getSdlMap();
-	for (const auto& val : SdlPref::instance()->get_array("SDL_KeyModMask", { "KMOD_RSHIFT" }))
+	for (const auto& val :
+	     SdlPref::instance()->get_array("SDL_KeyModMask", { "KMOD_RSHIFT", "KMOD_RCTRL" }))
 	{
 		auto it = m.find(val);
 		if (it != m.end())
@@ -441,7 +442,8 @@ uint32_t sdlInput::prefToMask()
 {
 	const auto& mapping = getSdlMap();
 	uint32_t mod = KMOD_NONE;
-	for (const auto& val : SdlPref::instance()->get_array("SDL_KeyModMask", { "KMOD_RSHIFT" }))
+	for (const auto& val :
+	     SdlPref::instance()->get_array("SDL_KeyModMask", { "KMOD_RSHIFT", "KMOD_RCTRL" }))
 	{
 		auto it = mapping.find(val);
 		if (it != mapping.end())

@@ -422,11 +422,19 @@ BOOL sdlInput::keyboard_set_ime_status(rdpContext* context, UINT16 imeId, UINT32
 	return str;
 }
 
+/* The hotkey check requires every bit of the mask to be held, so the generic
+ * KMOD_CTRL (LCTRL|RCTRL) would mean "both control keys". Name the right-hand
+ * one explicitly. */
+static std::vector<std::string> defaultKeyModMask()
+{
+	return { "KMOD_RSHIFT", "KMOD_RCTRL" };
+}
+
 bool sdlInput::prefToEnabled()
 {
 	bool enabled = true;
 	const auto& m = getSdlMap();
-	for (const auto& val : SdlPref::instance()->get_array("SDL_KeyModMask", { "KMOD_RSHIFT" }))
+	for (const auto& val : SdlPref::instance()->get_array("SDL_KeyModMask", defaultKeyModMask()))
 	{
 		auto it = m.find(val);
 		if (it != m.end())
@@ -449,7 +457,7 @@ uint32_t sdlInput::prefToMask()
 {
 	const auto& m = getSdlMap();
 	uint32_t mod = SDL_KMOD_NONE;
-	for (const auto& val : SdlPref::instance()->get_array("SDL_KeyModMask", { "KMOD_RSHIFT" }))
+	for (const auto& val : SdlPref::instance()->get_array("SDL_KeyModMask", defaultKeyModMask()))
 	{
 		auto it = m.find(val);
 		if (it != m.end())

@@ -108,6 +108,31 @@ class SdlWindow
   private:
 	void ensureRenderTarget();
 
+	/* FREERDP_SDL_SHOW_DAMAGE: tint the regions updated this frame, to make the
+	 * incremental update path visible. Read once. */
+	[[nodiscard]] static bool showDamage();
+
+	/* FREERDP_SDL_SHOW_STATS: draw a counter overlay in the top left corner.
+	 * Read once; the value, if numeric and > 0, is the text scale. */
+	[[nodiscard]] static bool showStats();
+	[[nodiscard]] static float statsScale();
+
+	/* Draws the overlay onto the backbuffer. Call with the render target unset
+	 * and immediately before presenting. */
+	void renderStats();
+
+	/* Regions blitted since the last present, in render-target coordinates.
+	 * Only collected when showDamage() is on. */
+	std::vector<SDL_Rect> _damageRects;
+
+	/* Counters for the overlay, accumulated over a sampling window and only
+	 * touched when showStats() is on. */
+	Uint64 _statsWindowStart = 0; /* SDL_GetTicksNS() at the window's start */
+	Uint64 _statsFrames = 0;      /* presents */
+	Uint64 _statsBlits = 0;       /* SDL_UpdateTexture calls */
+	Uint64 _statsBytes = 0;       /* bytes handed to SDL_UpdateTexture */
+	std::string _statsText;       /* last formatted result, redrawn every frame */
+
 	SDL_Window* _window = nullptr;
 	SDL_Renderer* _renderer = nullptr;
 	SDL_Texture* _renderTarget = nullptr;
