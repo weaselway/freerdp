@@ -1,6 +1,6 @@
 set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
 set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
-set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+# set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
 
 execute_process(COMMAND which x86_64-w64-mingw32-windres OUTPUT_VARIABLE TOOLCHAIN_RC_COMPILER)
 execute_process(COMMAND which x86_64-w64-mingw32-dlltool OUTPUT_VARIABLE TOOLCHAIN_DLLTOOL)

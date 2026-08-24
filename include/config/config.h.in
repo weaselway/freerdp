@@ -234,6 +234,13 @@
  */
 #cmakedefine HAVE_AF_VSOCK_H
 
+/** If defined Hyper-V socket (AF_HYPERV) support is available.
+ *
+ *  This is the Windows counterpart of \b HAVE_AF_VSOCK_H and requires
+ *  <hvsocket.h> from a recent mingw-w64 or Windows SDK.
+ */
+#cmakedefine HAVE_AF_HYPERV_H
+
 /** If library is build without these do permanently hide symbols
  *
  * \since version 3.17.2
