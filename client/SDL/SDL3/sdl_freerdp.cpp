@@ -241,6 +241,10 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 							if (!sdl->drawToWindows(rectangles))
 								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
 						} while (!rectangles.empty());
+
+						/* The upload above is the last read of the gfxredir
+						 * shared memory, so the server may reuse it now. */
+						sdl->gfxRedirCompletePresent();
 					}
 					break;
 					case SDL_EVENT_USER_CREATE_WINDOWS:

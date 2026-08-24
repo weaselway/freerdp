@@ -29,6 +29,21 @@ extern "C"
 
 	typedef struct s_gfxredir_client_context GfxRedirClientContext;
 
+	/**
+	 * A buffer resolved to the client's mapping of the shared memory pool that
+	 * backs it. Valid only until the buffer is destroyed or its pool closed,
+	 * i.e. do not hold it past the PresentBuffer callback.
+	 */
+	typedef struct
+	{
+		const void* data; /* read-only view of the buffer's first pixel */
+		size_t size;      /* bytes readable from data */
+		UINT32 stride;
+		UINT32 width;
+		UINT32 height;
+		UINT32 format; /* GFXREDIR_BUFFER_PIXEL_FORMAT_* */
+	} GFXREDIR_BUFFER_MAPPING;
+
 	/* Every callback is optional; leave one nullptr to ignore that PDU. The
 	 * channel handles the caps handshake itself and only reports the outcome.
 	 * All of these are invoked on the drdynvc receive thread. */
@@ -50,6 +65,9 @@ extern "C"
 	typedef UINT (*pcGfxRedirPresentBufferAck)(GfxRedirClientContext* context,
 	                                           const GFXREDIR_PRESENT_BUFFER_ACK_PDU* ack);
 
+	typedef BOOL (*pcGfxRedirGetBufferMapping)(GfxRedirClientContext* context, UINT64 bufferId,
+	                                           GFXREDIR_BUFFER_MAPPING* mapping);
+
 	struct s_gfxredir_client_context
 	{
 		void* handle;
@@ -64,8 +82,15 @@ extern "C"
 		pcGfxRedirDestroyBuffer DestroyBuffer;
 		pcGfxRedirPresentBuffer PresentBuffer;
 
-		/* Client -> server. Set by the channel, called by the application. */
+		/* Set by the channel, called by the application. */
 		WINPR_ATTR_NODISCARD pcGfxRedirPresentBufferAck PresentBufferAck;
+
+		/**
+		 * Resolve a bufferId to the mapped shared memory behind it. Returns
+		 * FALSE if the buffer is unknown, or if its pool could not be mapped
+		 * (no /wslgsharedmemorypath, or the geometry does not fit the pool).
+		 */
+		WINPR_ATTR_NODISCARD pcGfxRedirGetBufferMapping GetBufferMapping;
 
 		/**
 		 * The server allows only one present in flight per window and waits for
