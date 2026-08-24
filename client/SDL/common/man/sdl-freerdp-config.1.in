@@ -32,7 +32,12 @@ Defines the key combination required for SDL client shortcuts\&.
 .br
 
 Default
-\fIKMOD_RSHIFT\fR
+\fIKMOD_RSHIFT\fR, \fIKMOD_RCTRL\fR
+.br
+
+All listed modifiers must be held down simultaneously\&. Note that the combined
+names (\fIKMOD_CTRL\fR, \fIKMOD_SHIFT\fR, \fIKMOD_ALT\fR, \fIKMOD_GUI\fR) cover
+both the left and right key, and therefore require both to be pressed\&.
 .br
 
 An array of
