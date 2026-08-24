@@ -21,6 +21,9 @@ set(MODULE_PREFIX "FREERDP_CORE")
 # We use some fields that are only defined in linux 5.11+
 check_symbol_exists(VMADDR_FLAG_TO_HOST "ctype.h;sys/socket.h;linux/vm_sockets.h" HAVE_AF_VSOCK_H)
 
+# Windows equivalent of AF_VSOCK: Hyper-V sockets. Needs a mingw-w64/SDK with <hvsocket.h>.
+check_symbol_exists(HV_PROTOCOL_RAW "winsock2.h;hvsocket.h" HAVE_AF_HYPERV_H)
+
 freerdp_definition_add(EXT_PATH="${FREERDP_EXTENSION_PATH}")
 
 freerdp_include_directory_add(${OPENSSL_INCLUDE_DIR})
