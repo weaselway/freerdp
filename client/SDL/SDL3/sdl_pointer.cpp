@@ -18,6 +18,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 
 #include <freerdp/config.h>
 
@@ -146,12 +147,26 @@ bool sdl_Pointer_Set_Process(SdlContext* sdl)
 	if (!window)
 		return sdl_Pointer_SetDefault(context);
 
-	const Uint32 id = SDL_GetWindowID(window);
-
 	const SDL_FRect orig{ ix, iy, isw, ish };
-	const auto pos = sdl->pixelToScreen(id, orig, true);
-	WLog_Print(sdl->getWLog(), WLOG_DEBUG, "cursor scale: pixel:%s, display:%s",
-	           sdl::utils::toString(orig).c_str(), sdl::utils::toString(pos).c_str());
+
+	/* Deliberately not pixelToScreen(): that folds in the local display scale,
+	 * so at 150% Windows scaling the cursor came out 1.5x larger than the
+	 * remote desktop content it is drawn over.
+	 *
+	 * SDL sizes a cursor in logical units and multiplies by the display scale
+	 * when drawing, so dividing the remote bitmap size by that same scale here
+	 * cancels it out: the cursor lands on screen at exactly the pixel size the
+	 * server sent, whatever the client is configured to. */
+	auto dscale = SDL_GetWindowDisplayScale(window);
+	if (dscale <= 0.0f)
+		dscale = 1.0f;
+
+	const SDL_FRect pos{ std::floor(orig.x / dscale), std::floor(orig.y / dscale),
+		                 std::max(1.0f, std::ceil(orig.w / dscale)),
+		                 std::max(1.0f, std::ceil(orig.h / dscale)) };
+	WLog_Print(sdl->getWLog(), WLOG_DEBUG, "cursor scale: pixel:%s, display:%s, displayScale:%f",
+	           sdl::utils::toString(orig).c_str(), sdl::utils::toString(pos).c_str(),
+	           static_cast<double>(dscale));
 
 	sdl_Pointer_Clear(ptr);
 
