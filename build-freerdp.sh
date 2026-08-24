@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
 # This script lives inside the FreeRDP checkout, so everything is anchored to
 # its own location rather than $PWD -- it can be run from anywhere.
@@ -8,37 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SOURCE=$SCRIPT_DIR
 BUILD_DIR="${SOURCE}/build/freerdp"
-
-# No CMAKE_TOOLCHAIN_FILE. The cross environment comes from the nix devshell in
-# flake.nix, which puts the x86_64-w64-mingw32 wrappers on PATH and points $CC
-# and $CXX at them -- CMake picks those up on its own, so all that is left to
-# state is the target system. A toolchain file here would fight that by naming
-# compilers and a sysroot that only exist on a Fedora-style layout.
-#
-# What the toolchain file *does* carry that we still need is CMAKE_FIND_ROOT_PATH.
-# Without it, find_package() searches the build host: CMake derives prefixes from
-# $PATH, so /usr/bin puts the whole of /usr on the search path. Under nix that is
-# harmless -- there is no host /usr/include -- but on a distro image it means the
-# Linux copy of a dependency wins. jansson is the one FreeRDP asks for that Arch
-# has natively and not for mingw, and finding it at /usr/include + /usr/lib puts
-# "-isystem /usr/include" on every compile, so glibc's headers shadow the mingw
-# ones and winpr dies in a pile of "redefinition of 'struct timeval'" and
-# conflicting ssize_t/time_t/fd_set/select declarations.
-#
-# So point find_* at the target sysroot instead, when there is one to point at.
-# Distro mingw packaging (Arch, Fedora) puts it at /usr/<triple>; nix has no such
-# directory and needs the search left alone, which is exactly the condition below.
-# The SDL prefixes join the root path because find_package still has to see them.
-#
-# Configure once behind an "okay" marker and build incrementally after that,
-# same as build.sh and build-mesa.sh. CLEAN=1 forces a reconfigure, which is
-# what you want after changing anything below or switching environments -- a
-# cache holding paths from a different toolchain is the one way this goes
-# quietly wrong.
-if [ "${CLEAN:-}" = "1" ]; then
-    rm -rf "$BUILD_DIR"
-fi
-mkdir -p "$BUILD_DIR"
 
 # Official SDL mingw development tarballs. These are prebuilt and shared only
 # (libSDL3.dll.a import libs, no static archives), so WITH_SDL_LINK_SHARED stays ON
@@ -156,7 +125,6 @@ cmake -GNinja \
     -DUSE_UNWIND=OFF \
     -DCHANNEL_URBDRC=OFF \
     -DOPENSSL_USE_STATIC_LIBS=ON \
-    -DZLIB_USE_STATIC_LIBS=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_WINDOWS_VERSION=Win10 \
     -DCMAKE_EXE_LINKER_FLAGS="-static" \
