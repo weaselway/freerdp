@@ -167,8 +167,8 @@ static UINT gfxredir_ack_present(GENERIC_CHANNEL_CALLBACK* callback, UINT64 wind
 	Stream_Write_UINT64(s, windowId);
 	Stream_Write_UINT64(s, presentId);
 
-	WLog_INFO(TAG, "<- PresentBufferAck presentId=%" PRIu64 " windowId=%" PRIu64, presentId,
-	          windowId);
+	WLog_DBG(TAG, "<- PresentBufferAck presentId=%" PRIu64 " windowId=%" PRIu64, presentId,
+	         windowId);
 	return gfxredir_packet_send(callback, s);
 }
 
@@ -625,13 +625,13 @@ static UINT gfxredir_recv_present_buffer(GENERIC_CHANNEL_CALLBACK* callback, wSt
 	}
 	pdu.opaqueRects = opaqueRects;
 
-	WLog_INFO(TAG,
-	          "-> PresentBuffer presentId=%" PRIu64 " bufferId=%" PRIu64 " windowId=%" PRIu64
-	          " rect=%" PRIu32 "x%" PRIu32 "+%" PRIu32 "+%" PRIu32 " target=%" PRIu32 "x%" PRIu32
-	          " orientation=%" PRIu32 " numOpaqueRects=%" PRIu32,
-	          pdu.presentId, pdu.bufferId, pdu.windowId, pdu.dirtyRect.width, pdu.dirtyRect.height,
-	          pdu.dirtyRect.left, pdu.dirtyRect.top, pdu.targetWidth, pdu.targetHeight,
-	          pdu.orientation, pdu.numOpaqueRects);
+	WLog_DBG(TAG,
+	         "-> PresentBuffer presentId=%" PRIu64 " bufferId=%" PRIu64 " windowId=%" PRIu64
+	         " rect=%" PRIu32 "x%" PRIu32 "+%" PRIu32 "+%" PRIu32 " target=%" PRIu32 "x%" PRIu32
+	         " orientation=%" PRIu32 " numOpaqueRects=%" PRIu32,
+	         pdu.presentId, pdu.bufferId, pdu.windowId, pdu.dirtyRect.width, pdu.dirtyRect.height,
+	         pdu.dirtyRect.left, pdu.dirtyRect.top, pdu.targetWidth, pdu.targetHeight,
+	         pdu.orientation, pdu.numOpaqueRects);
 
 	if (gfxredir->context && gfxredir->context->PresentBuffer)
 	{
