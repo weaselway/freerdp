@@ -565,6 +565,9 @@ static const COMMAND_LINE_ARGUMENT_A global_cmd_args[] = {
 	  "Set the WM_CLASS hint for the window instance" },
 	{ "workarea", COMMAND_LINE_VALUE_FLAG, nullptr, nullptr, nullptr, -1, nullptr,
 	  "Use available work area" },
+	{ "wslgsharedmemorypath", COMMAND_LINE_VALUE_REQUIRED, "<path>", nullptr, nullptr, -1, nullptr,
+	  "Namespace prefix of the WSLg shared memory pools backing the gfxredir "
+	  "channel, e.g. WSL\\<guid>\\wslg" },
 	{ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr }
 };
 #endif /* CLIENT_COMMON_CMDLINE_H */

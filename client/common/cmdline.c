@@ -1224,6 +1224,21 @@ static int freerdp_client_command_line_post_filter_int(void* context, COMMAND_LI
 		if (!freerdp_settings_set_bool(settings, FreeRDP_SupportEchoChannel, enable))
 			return fail_at(arg, COMMAND_LINE_ERROR);
 	}
+#if defined(CHANNEL_GFXREDIR_CLIENT)
+	CommandLineSwitchCase(arg, "wslgsharedmemorypath")
+	{
+		/* Carried as an argument on the gfxredir dynamic channel rather than as
+		 * a settings key, so the channel can pick it up in its plugin init
+		 * without adding to the settings ABI. Registering it here also means
+		 * this wins over the argument-less entry that
+		 * freerdp_client_load_addins() adds later, which is a no-op once the
+		 * channel is already in the collection. */
+		const char* const p[] = { "gfxredir", arg->Value };
+
+		if (!freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p))
+			return fail_at(arg, COMMAND_LINE_ERROR_MEMORY);
+	}
+#endif
 	CommandLineSwitchCase(arg, "ssh-agent")
 	{
 		if (!freerdp_settings_set_bool(settings, FreeRDP_SupportSSHAgentChannel, enable))

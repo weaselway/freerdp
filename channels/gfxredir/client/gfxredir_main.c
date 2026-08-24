@@ -21,8 +21,11 @@
 
 #include <winpr/crt.h>
 #include <winpr/assert.h>
+#include <winpr/memory.h>
 #include <winpr/stream.h>
+#include <winpr/string.h>
 
+#include <freerdp/settings.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/gfxredir.h>
 #include <freerdp/channels/log.h>
@@ -39,6 +42,17 @@ typedef struct
 
 	GfxRedirClientContext* context;
 	UINT32 confirmedCapsVersion;
+
+	/* Namespace prefix the server's pool section names are relative to, from
+	 * /wslgsharedmemorypath. Without it we cannot map a pool at all. */
+	char* sharedMemoryPath;
+
+	/* The single pool the server has open, if any. Mapped but not yet used for
+	 * anything -- presentation still has to be built on top. */
+	UINT64 poolId;
+	HANDLE poolMapping;
+	void* poolAddr;
+	UINT64 poolSize;
 } GFXREDIR_PLUGIN;
 
 static GFXREDIR_PLUGIN* gfxredir_get_plugin(GENERIC_CHANNEL_CALLBACK* callback)
@@ -227,6 +241,97 @@ static UINT gfxredir_recv_error(GENERIC_CHANNEL_CALLBACK* callback, wStream* s)
 	return CHANNEL_RC_OK;
 }
 
+/* Release whatever pool mapping we are holding, if any. */
+static void gfxredir_unmap_pool(GFXREDIR_PLUGIN* gfxredir)
+{
+	if (gfxredir->poolAddr)
+	{
+		(void)UnmapViewOfFile(gfxredir->poolAddr);
+		gfxredir->poolAddr = nullptr;
+	}
+
+	if (gfxredir->poolMapping)
+	{
+		(void)CloseHandle(gfxredir->poolMapping);
+		gfxredir->poolMapping = nullptr;
+	}
+
+	gfxredir->poolId = 0;
+	gfxredir->poolSize = 0;
+}
+
+/**
+ * Map the shared memory section backing a pool. The server sends only the
+ * section's own name; it lives under the namespace passed on the command line
+ * as /wslgsharedmemorypath.
+ *
+ * Nothing reads the mapping yet -- this only proves we can reach the memory.
+ */
+static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POOL_PDU* pdu)
+{
+	char* sectionName = nullptr;
+	char* fullName = nullptr;
+
+	if (!gfxredir->sharedMemoryPath)
+	{
+		WLog_WARN(TAG, "no /wslgsharedmemorypath given, cannot map pool %" PRIu64, pdu->poolId);
+		return;
+	}
+
+	gfxredir_unmap_pool(gfxredir);
+
+	/* sectionNameLength counts wchars and includes the terminator. */
+	sectionName = ConvertWCharNToUtf8Alloc((const WCHAR*)pdu->sectionName,
+	                                       pdu->sectionNameLength, nullptr);
+	if (!sectionName)
+	{
+		WLog_ERR(TAG, "failed to convert pool section name");
+		return;
+	}
+
+	size_t fullNameLen = 0;
+	if (winpr_asprintf(&fullName, &fullNameLen, "%s\\%s", gfxredir->sharedMemoryPath,
+	                   sectionName) < 0)
+	{
+		fullName = nullptr;
+		goto out;
+	}
+
+	gfxredir->poolMapping = OpenFileMappingA(FILE_MAP_READ, FALSE, fullName);
+	if (!gfxredir->poolMapping)
+	{
+		WLog_ERR(TAG, "OpenFileMapping(\"%s\") failed with 0x%08" PRIx32, fullName,
+		         (UINT32)GetLastError());
+		goto out;
+	}
+
+	if (pdu->poolSize > SIZE_MAX)
+	{
+		WLog_ERR(TAG, "pool size %" PRIu64 " does not fit in this address space", pdu->poolSize);
+		gfxredir_unmap_pool(gfxredir);
+		goto out;
+	}
+
+	gfxredir->poolAddr = MapViewOfFile(gfxredir->poolMapping, FILE_MAP_READ, 0, 0,
+	                                   (SIZE_T)pdu->poolSize);
+	if (!gfxredir->poolAddr)
+	{
+		WLog_ERR(TAG, "MapViewOfFile(\"%s\", %" PRIu64 ") failed with 0x%08" PRIx32, fullName,
+		         pdu->poolSize, (UINT32)GetLastError());
+		gfxredir_unmap_pool(gfxredir);
+		goto out;
+	}
+
+	gfxredir->poolId = pdu->poolId;
+	gfxredir->poolSize = pdu->poolSize;
+	WLog_INFO(TAG, "mapped pool %" PRIu64 " \"%s\" (%" PRIu64 " bytes) at %p", pdu->poolId,
+	          fullName, pdu->poolSize, gfxredir->poolAddr);
+
+out:
+	free(sectionName);
+	free(fullName);
+}
+
 /**
  * @return 0 on success, otherwise a Win32 error code
  */
@@ -253,6 +358,8 @@ static UINT gfxredir_recv_open_pool(GENERIC_CHANNEL_CALLBACK* callback, wStream*
 	          "-> OpenPool poolId=%" PRIu64 " poolSize=%" PRIu64 " sectionNameLength=%" PRIu32,
 	          pdu.poolId, pdu.poolSize, pdu.sectionNameLength);
 
+	gfxredir_map_pool(gfxredir, &pdu);
+
 	if (gfxredir->context && gfxredir->context->OpenPool)
 		return gfxredir->context->OpenPool(gfxredir->context, &pdu);
 
@@ -272,6 +379,9 @@ static UINT gfxredir_recv_close_pool(GENERIC_CHANNEL_CALLBACK* callback, wStream
 
 	Stream_Read_UINT64(s, pdu.poolId);
 	WLog_INFO(TAG, "-> ClosePool poolId=%" PRIu64, pdu.poolId);
+
+	if (gfxredir->poolId == pdu.poolId)
+		gfxredir_unmap_pool(gfxredir);
 
 	if (gfxredir->context && gfxredir->context->ClosePool)
 		return gfxredir->context->ClosePool(gfxredir->context, &pdu);
@@ -459,7 +569,9 @@ static UINT gfxredir_on_data_received(IWTSVirtualChannelCallback* pChannelCallba
 	}
 
 	/* Skip whatever the handler did not consume, PDUs are packed back to back. */
-	Stream_SetPosition(data, beg + header.length);
+	if (!Stream_SetPosition(data, beg + header.length))
+		return ERROR_INVALID_DATA;
+
 	return CHANNEL_RC_OK;
 }
 
@@ -489,11 +601,27 @@ static UINT gfxredir_on_close(IWTSVirtualChannelCallback* pChannelCallback)
  */
 static UINT gfxredir_plugin_initialize(GENERIC_DYNVC_PLUGIN* base,
                                        WINPR_ATTR_UNUSED rdpContext* rcontext,
-                                       WINPR_ATTR_UNUSED rdpSettings* settings)
+                                       rdpSettings* settings)
 {
 	GFXREDIR_PLUGIN* gfxredir = (GFXREDIR_PLUGIN*)base;
 
 	WINPR_ASSERT(gfxredir);
+
+	/* /wslgsharedmemorypath is passed through as this channel's addin argument;
+	 * see the command line handler in client/common/cmdline.c. */
+	const ADDIN_ARGV* args = freerdp_dynamic_channel_collection_find(settings, "gfxredir");
+	if (args && (args->argc > 1) && args->argv[1])
+	{
+		gfxredir->sharedMemoryPath = _strdup(args->argv[1]);
+		if (!gfxredir->sharedMemoryPath)
+			return CHANNEL_RC_NO_MEMORY;
+
+		WLog_INFO(TAG, "shared memory path \"%s\"", gfxredir->sharedMemoryPath);
+	}
+	else
+	{
+		WLog_WARN(TAG, "no /wslgsharedmemorypath given, pools cannot be mapped");
+	}
 
 	GfxRedirClientContext* context = (GfxRedirClientContext*)calloc(1, sizeof(*context));
 	if (!context)
@@ -516,6 +644,11 @@ static void gfxredir_plugin_terminated(GENERIC_DYNVC_PLUGIN* base)
 	GFXREDIR_PLUGIN* gfxredir = (GFXREDIR_PLUGIN*)base;
 
 	WINPR_ASSERT(gfxredir);
+
+	gfxredir_unmap_pool(gfxredir);
+
+	free(gfxredir->sharedMemoryPath);
+	gfxredir->sharedMemoryPath = nullptr;
 
 	free(gfxredir->context);
 	gfxredir->context = nullptr;
