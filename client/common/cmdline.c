@@ -6168,6 +6168,11 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 #ifdef CHANNEL_ECHO_CLIENT
 		{ FreeRDP_SupportEchoChannel, ECHO_CHANNEL_NAME, nullptr },
 #endif
+#ifdef CHANNEL_GFXREDIR_CLIENT
+		/* The server only opens the DVC when it wants shared-memory graphics
+		 * redirection, so listening unconditionally costs nothing. */
+		{ FreeRDP_BOOL_UNUSED, "gfxredir", nullptr },
+#endif
 #ifdef CHANNEL_SSHAGENT_CLIENT
 		{ FreeRDP_SupportSSHAgentChannel, "sshagent", nullptr },
 #endif
