@@ -1,0 +1,26 @@
+name: Docker build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build via docker-env.sh
+        run: ./docker-env.sh
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freerdp-build
+          path: |
+            build/*.dll
+            build/sdl-freerdp.exe
