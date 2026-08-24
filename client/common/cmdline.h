@@ -539,7 +539,8 @@ static const COMMAND_LINE_ARGUMENT_A global_cmd_args[] = {
 	  "Redirect USB device" },
 #endif
 	{ "v", COMMAND_LINE_VALUE_REQUIRED, "<server>[:port]", nullptr, nullptr, -1, nullptr,
-	  "Server hostname|URL|IPv4|IPv6 or vsock://<number> or /some/path/to/pipe or |:1234 to pass a "
+	  "Server hostname|URL|IPv4|IPv6 or vsock://<number|VM GUID> or /some/path/to/pipe or |:1234 to "
+	  "pass a "
 	  "TCP socket to use" },
 	{ "vc", COMMAND_LINE_VALUE_REQUIRED, "<channel>[,<options>]", nullptr, nullptr, -1, nullptr,
 	  "Static virtual channel" },

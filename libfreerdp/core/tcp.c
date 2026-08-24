@@ -90,6 +90,16 @@
 #include <linux/vm_sockets.h>
 #endif
 
+#if defined(HAVE_AF_HYPERV_H)
+#include <ctype.h>
+/* hvsocket.h pulls in initguid.h, so the HV_GUID_* constants are defined here.
+ * Keep this the only translation unit including it to avoid duplicate symbols. */
+#include <hvsocket.h>
+#ifndef AF_HYPERV
+#define AF_HYPERV 34
+#endif
+#endif
+
 #define TAG FREERDP_TAG("core")
 
 /* Simple Socket BIO */
@@ -1178,6 +1188,110 @@ fail:
 	return -1;
 }
 
+#if defined(HAVE_AF_HYPERV_H)
+/** Parse the address part of a vsock://<address> target into a Hyper-V VmId.
+ *
+ *  Accepted forms:
+ *   - a raw VM GUID, with or without surrounding braces
+ *   - the well known names parent, children, loopback, silohost, broadcast, wildcard
+ *   - a numeric Linux style CID, for compatibility with vsock://2 (the host)
+ */
+static BOOL freerdp_hv_parse_vmid(const char* hostname, GUID* vmid)
+{
+	WINPR_ASSERT(hostname);
+	WINPR_ASSERT(vmid);
+
+	static const struct
+	{
+		const char* name;
+		const GUID* guid;
+	} wellknown[] = { { "parent", &HV_GUID_PARENT },       { "children", &HV_GUID_CHILDREN },
+		              { "loopback", &HV_GUID_LOOPBACK },   { "silohost", &HV_GUID_SILOHOST },
+		              { "broadcast", &HV_GUID_BROADCAST }, { "wildcard", &HV_GUID_WILDCARD } };
+
+	for (size_t x = 0; x < ARRAYSIZE(wellknown); x++)
+	{
+		if (_stricmp(hostname, wellknown[x].name) == 0)
+		{
+			*vmid = *wellknown[x].guid;
+			return TRUE;
+		}
+	}
+
+	/* vsock://<cid>: only the well known CIDs have a Hyper-V counterpart.
+	 * Only take this path for an all digit string, a GUID may start with a digit too. */
+	size_t digits = 0;
+	while (isdigit((unsigned char)hostname[digits]))
+		digits++;
+
+	if ((digits > 0) && (hostname[digits] == '\0'))
+	{
+		errno = 0;
+		const unsigned long cid = strtoul(hostname, nullptr, 10);
+		if (errno)
+		{
+			WLog_ERR(TAG, "invalid vsock CID '%s'", hostname);
+			return FALSE;
+		}
+
+		switch (cid)
+		{
+			case 0: /* VMADDR_CID_HYPERVISOR */
+			case 2: /* VMADDR_CID_HOST */
+				*vmid = HV_GUID_PARENT;
+				return TRUE;
+			case 1: /* VMADDR_CID_LOCAL */
+				*vmid = HV_GUID_LOOPBACK;
+				return TRUE;
+			default:
+				WLog_ERR(TAG,
+				         "vsock CID %lu has no Hyper-V equivalent, use the VM GUID instead of '%s'",
+				         cid, hostname);
+				return FALSE;
+		}
+	}
+
+	/* A raw GUID, optionally wrapped in braces. */
+	char buffer[64] = WINPR_C_ARRAY_INIT;
+	const char* guid = hostname;
+	if (guid[0] == '{')
+	{
+		const size_t len = strlen(guid);
+		if ((len < 3) || (guid[len - 1] != '}') || (len - 2 >= sizeof(buffer)))
+		{
+			WLog_ERR(TAG, "invalid VM GUID '%s'", hostname);
+			return FALSE;
+		}
+		memcpy(buffer, &guid[1], len - 2);
+		guid = buffer;
+	}
+
+	unsigned data1 = 0;
+	unsigned data2 = 0;
+	unsigned data3 = 0;
+	unsigned data4[8] = WINPR_C_ARRAY_INIT;
+	char tail = '\0';
+	const int rc = sscanf(guid, "%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x%c", &data1, &data2, &data3,
+	                      &data4[0], &data4[1], &data4[2], &data4[3], &data4[4], &data4[5],
+	                      &data4[6], &data4[7], &tail);
+	if (rc != 11)
+	{
+		WLog_ERR(TAG, "'%s' is neither a well known name nor a VM GUID", hostname);
+		return FALSE;
+	}
+
+	GUID id = WINPR_C_ARRAY_INIT;
+	id.Data1 = (unsigned long)data1;
+	id.Data2 = (unsigned short)data2;
+	id.Data3 = (unsigned short)data3;
+	for (size_t x = 0; x < ARRAYSIZE(data4); x++)
+		id.Data4[x] = (unsigned char)data4[x];
+
+	*vmid = id;
+	return TRUE;
+}
+#endif
+
 static int freerdp_vsock_connect(rdpContext* context, const char* hostname, int port)
 {
 #if defined(HAVE_AF_VSOCK_H)
@@ -1219,6 +1333,46 @@ static int freerdp_vsock_connect(rdpContext* context, const char* hostname, int 
 		return -1;
 	}
 	return sockfd;
+#elif defined(HAVE_AF_HYPERV_H)
+	if (port < 0)
+	{
+		WLog_ERR(TAG, "port %d out of range for a Hyper-V service ID", port);
+		return -1;
+	}
+
+	SOCKADDR_HV addr = WINPR_C_ARRAY_INIT;
+	addr.Family = AF_HYPERV;
+
+	if (!freerdp_hv_parse_vmid(hostname, &addr.VmId))
+	{
+		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
+		return -1;
+	}
+
+	/* Ports are mapped onto the vsock service ID template, the same way the Linux
+	 * compatibility shim in the Hyper-V socket provider does it. */
+	addr.ServiceId = HV_GUID_VSOCK_TEMPLATE;
+	addr.ServiceId.Data1 = (unsigned long)port;
+
+	const SOCKET s = socket(AF_HYPERV, SOCK_STREAM, HV_PROTOCOL_RAW);
+	if (s == INVALID_SOCKET)
+	{
+		WLog_ERR(TAG, "socket(AF_HYPERV, SOCK_STREAM, HV_PROTOCOL_RAW) failed with %d",
+		         WSAGetLastError());
+		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
+		return -1;
+	}
+
+	if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
+	{
+		WLog_ERR(TAG, "failed to connect to vsock://%s:%d, error %d", hostname, port,
+		         WSAGetLastError());
+		closesocket(s);
+		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
+		return -1;
+	}
+
+	return (int)s;
 #else
 	WLog_ERR(TAG, "Compiled without AF_VSOCK, '%s' not supported", hostname);
 	return -1;
@@ -1322,7 +1476,14 @@ int freerdp_tcp_default_connect(rdpContext* context, rdpSettings* settings, cons
 	else if (useExternalDefinedSocket)
 		sockfd = port;
 	else if (vsock)
+	{
 		sockfd = freerdp_vsock_connect(context, vsock, port);
+		if (sockfd < 0)
+		{
+			freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
+			return -1;
+		}
+	}
 	else
 	{
 		if (!settings->GatewayEnabled)
