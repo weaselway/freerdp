@@ -15,20 +15,44 @@ BUILD_DIR="${SOURCE}/build/freerdp"
 SDL3_VERSION=3.4.14
 SDL3_TTF_VERSION=3.2.2
 
+# MSYS2's prebuilt mingw OpenSSL, used in place of whatever the host toolchain
+# happens to ship for the target (the Arch cross toolchain has none at all).
+# The package carries static archives next to the import libraries, which is
+# what OPENSSL_USE_STATIC_LIBS below needs. Note the version is the full MSYS2
+# package version, upstream release plus pkgrel.
+#
+# It has to be the ucrt64 package rather than the mingw64 one. MSYS2 builds
+# those two environments against different C runtimes -- ucrtbase.dll and the
+# old msvcrt.dll -- and mingw-w64 has defaulted to UCRT for a while now, which
+# is what the toolchain in the Dockerfile does. Feeding the msvcrt build to a
+# UCRT link fails on symbols only the old runtime exported, e.g.
+# "undefined reference to `__imp__vsnprintf'" out of libcrypto.a.
+OPENSSL_VERSION=3.6.3-1
+
 # Fetched dependencies, not sources, so they live under build/ with everything
 # else that is generated -- and are covered by its .gitignore entry.
 SDL3_DIR=${SOURCE}/build/SDL3-$SDL3_VERSION
 SDL3_TTF_DIR=${SOURCE}/build/SDL3_ttf-$SDL3_TTF_VERSION
+OPENSSL_DIR=${SOURCE}/build/openssl-ucrt64-$OPENSSL_VERSION
 
 SDL3_PREFIX=$SDL3_DIR/x86_64-w64-mingw32
 SDL3_TTF_PREFIX=$SDL3_TTF_DIR/x86_64-w64-mingw32
+# MSYS2 packages are rooted at the prefix they install into, so the usual
+# bin/include/lib live one level down, under the environment name.
+OPENSSL_PREFIX=$OPENSSL_DIR/ucrt64
 
-# Fetch and unpack the tarballs if they are not already here. Each unpacks to
+# Fetch and unpack the archives if they are not already here. Each ends up as
 # exactly the directory name built above, so the directory existing is the test
-# for "already have it" -- there is nothing else to check against, as upstream
-# publishes no checksum alongside the release asset.
-fetch_sdl() {
-    local dir=$1 url=$2 tarball
+# for "already have it" -- there is nothing else to check against, as neither
+# upstream publishes a checksum alongside the download.
+#
+# $3 picks the layout. The SDL tarballs are "wrapped": they carry their own
+# top-level directory, so they unpack into the parent -- extracting into $dir
+# would nest them a level deeper. The MSYS2 package is "bare": its top level is
+# mingw64/ plus the package metadata files, so it gets a directory of its own
+# to keep that spill out of build/.
+fetch_dep() {
+    local dir=$1 url=$2 layout=$3 tarball dest
 
     if [ -d "$dir" ]; then
         return 0
@@ -39,9 +63,14 @@ fetch_sdl() {
     mkdir -p "${SOURCE}/build"
     curl -fsSL --retry 3 -o "$tarball" "$url"
 
-    # Unpack into the parent, not into $dir: the tarball carries its own
-    # top-level directory, so extracting into one would nest it a level deeper.
-    tar xf "$tarball" -C "$(dirname "$dir")"
+    if [ "$layout" = wrapped ]; then
+        dest=$(dirname "$dir")
+    else
+        dest=$dir
+        mkdir -p "$dest"
+    fi
+
+    tar xf "$tarball" -C "$dest"
     rm -f "$tarball"
 
     if [ ! -d "$dir" ]; then
@@ -50,11 +79,22 @@ fetch_sdl() {
     fi
 }
 
-fetch_sdl "$SDL3_DIR" \
-    "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz"
+fetch_dep "$SDL3_DIR" \
+    "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz" \
+    wrapped
 
-fetch_sdl "$SDL3_TTF_DIR" \
-    "https://github.com/libsdl-org/SDL_ttf/releases/download/release-$SDL3_TTF_VERSION/SDL3_ttf-devel-$SDL3_TTF_VERSION-mingw.tar.gz"
+fetch_dep "$SDL3_TTF_DIR" \
+    "https://github.com/libsdl-org/SDL_ttf/releases/download/release-$SDL3_TTF_VERSION/SDL3_ttf-devel-$SDL3_TTF_VERSION-mingw.tar.gz" \
+    wrapped
+
+fetch_dep "$OPENSSL_DIR" \
+    "https://mirror.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-openssl-$OPENSSL_VERSION-any.pkg.tar.zst" \
+    bare
+
+if [ ! -d "$OPENSSL_PREFIX" ]; then
+    echo "build-freerdp.sh: $OPENSSL_DIR has no $(basename "$OPENSSL_PREFIX")/ prefix" >&2
+    exit 1
+fi
 
 source mingw-env x86_64-w64-mingw32
 
@@ -65,7 +105,7 @@ CROSS_FIND_ARGS=()
 MINGW_SYSROOT=${MINGW_SYSROOT:-/usr/x86_64-w64-mingw32}
 if [ -d "$MINGW_SYSROOT" ]; then
     CROSS_FIND_ARGS=(
-        -DCMAKE_FIND_ROOT_PATH="$MINGW_SYSROOT;$SDL3_PREFIX;$SDL3_TTF_PREFIX"
+        -DCMAKE_FIND_ROOT_PATH="$MINGW_SYSROOT;$SDL3_PREFIX;$SDL3_TTF_PREFIX;$OPENSSL_PREFIX"
         # Host tools -- ninja, git, the resource compiler -- are build-platform
         # binaries and have to keep coming from the host, so only libraries,
         # headers and packages are confined to the sysroot.
@@ -102,11 +142,11 @@ cmake -GNinja \
     -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
     "${CROSS_FIND_ARGS[@]}" \
     "${CXX_BINUTILS_ARGS[@]}" \
-    -DCMAKE_PREFIX_PATH="$SDL3_PREFIX;$SDL3_TTF_PREFIX" \
+    -DCMAKE_PREFIX_PATH="$SDL3_PREFIX;$SDL3_TTF_PREFIX;$OPENSSL_PREFIX" \
     -DCMAKE_BUILD_TYPE=Release \
     -DWITH_KRB5=OFF \
     -DWITH_TIMEZONE_ICU=OFF \
-    -DWITH_WINPR_TOOL=OFF \
+    -DWITH_WINPR_TOOLS=OFF \
     -DWITH_CLIENT_WINDOWS=OFF \
     -DWITH_CLIENT_SDL=ON \
     -DWITH_CLIENT_SDL3=ON \
@@ -125,6 +165,7 @@ cmake -GNinja \
     -DUSE_UNWIND=OFF \
     -DCHANNEL_URBDRC=OFF \
     -DOPENSSL_USE_STATIC_LIBS=ON \
+    -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_WINDOWS_VERSION=Win10 \
     -DCMAKE_EXE_LINKER_FLAGS="-static" \

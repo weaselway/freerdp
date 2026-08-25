@@ -22,15 +22,7 @@ if ! command -v docker >/dev/null; then
     exit 1
 fi
 
-# The Dockerfile pulls everything from pacman and the AUR and COPYs nothing in,
-# so it is fed on stdin with no build context at all. Handing docker $SCRIPT_DIR
-# as the context instead would upload the whole FreeRDP checkout -- build/ and
-# its SDL tarballs included -- on every run, for a Dockerfile that never reads
-# a byte of it.
-if [ "${REBUILD:-}" = "1" ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "docker-env.sh: building $IMAGE (this takes a while the first time)"
-    docker build -t "$IMAGE" - <"$SCRIPT_DIR/Dockerfile"
-fi
+docker build -t "$IMAGE" -f "$SCRIPT_DIR/Dockerfile" .
 
 if [ $# -eq 0 ]; then
     set -- ./build-freerdp.sh
