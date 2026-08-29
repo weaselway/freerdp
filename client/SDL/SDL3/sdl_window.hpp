@@ -83,6 +83,16 @@ class SdlWindow
 	[[nodiscard]] bool blit(SDL_Surface* surface, const SDL_Rect& src, SDL_Rect& dst);
 	void updateSurface();
 
+	/* /sdl-show-damage: tint the regions updated this frame, to make the
+	 * incremental update path visible. Process wide, set from the command
+	 * line before any window exists. */
+	static void setShowDamage(bool enable);
+
+	/* /sdl-show-stats[:<scale>]: draw a counter overlay in the top left corner.
+	 * The scale, if > 0, is the text scale; the built-in debug font is 8px,
+	 * which is unreadable on a HiDPI panel. Process wide. */
+	static void setShowStats(bool enable, float scale = 2.0f);
+
   protected:
 	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags);
 
@@ -108,12 +118,7 @@ class SdlWindow
   private:
 	void ensureRenderTarget();
 
-	/* FREERDP_SDL_SHOW_DAMAGE: tint the regions updated this frame, to make the
-	 * incremental update path visible. Read once. */
 	[[nodiscard]] static bool showDamage();
-
-	/* FREERDP_SDL_SHOW_STATS: draw a counter overlay in the top left corner.
-	 * Read once; the value, if numeric and > 0, is the text scale. */
 	[[nodiscard]] static bool showStats();
 	[[nodiscard]] static float statsScale();
 

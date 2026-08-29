@@ -573,42 +573,37 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 	return true;
 }
 
+/* Set from the command line before the first window is created, read from the
+ * SDL thread only. */
+static bool s_showDamage = false;
+static bool s_showStats = false;
+static float s_statsScale = 2.0f;
+
+void SdlWindow::setShowDamage(bool enable)
+{
+	s_showDamage = enable;
+}
+
+void SdlWindow::setShowStats(bool enable, float scale)
+{
+	s_showStats = enable;
+	if (scale > 0.0f)
+		s_statsScale = scale;
+}
+
 bool SdlWindow::showDamage()
 {
-	static const bool enabled = []()
-	{
-		const auto* env = SDL_getenv("FREERDP_SDL_SHOW_DAMAGE");
-		return (env != nullptr) && (SDL_strcmp(env, "0") != 0);
-	}();
-	return enabled;
+	return s_showDamage;
 }
 
 bool SdlWindow::showStats()
 {
-	static const bool enabled = []()
-	{
-		const auto* env = SDL_getenv("FREERDP_SDL_SHOW_STATS");
-		return (env != nullptr) && (SDL_strcmp(env, "0") != 0);
-	}();
-	return enabled;
+	return s_showStats;
 }
 
 float SdlWindow::statsScale()
 {
-	/* The built-in debug font is 8px, which is unreadable on a HiDPI panel, so
-	 * the env value doubles as a text scale. Anything non-numeric keeps the
-	 * default, so FREERDP_SDL_SHOW_STATS=1 stays a plain "on". */
-	static const float scale = []()
-	{
-		const auto* env = SDL_getenv("FREERDP_SDL_SHOW_STATS");
-		if (env == nullptr)
-			return 2.0f;
-		const auto val = SDL_atof(env);
-		if (val <= 0.0)
-			return 2.0f;
-		return static_cast<float>(val);
-	}();
-	return scale;
+	return s_statsScale;
 }
 
 void SdlWindow::renderStats()

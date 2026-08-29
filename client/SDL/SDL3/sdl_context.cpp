@@ -37,6 +37,8 @@
 #endif
 
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
+static constexpr auto sdl_show_damage = "sdl-show-damage";
+static constexpr auto sdl_show_stats = "sdl-show-stats";
 
 SdlContext::SdlContext(rdpContext* context)
     : _context(context), _log(WLog_Get(CLIENT_TAG("SDL"))), _cursor(nullptr, sdl_Pointer_FreeCopy),
@@ -70,6 +72,10 @@ SdlContext::SdlContext(rdpContext* context)
 
 	_args.push_back({ sdl_allow_screensaver, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
 	                  nullptr, -1, nullptr, "Allow local screensaver to activate" });
+	_args.push_back({ sdl_show_damage, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr,
+	                  -1, nullptr, "Tint the regions updated in each frame" });
+	_args.push_back({ sdl_show_stats, COMMAND_LINE_VALUE_OPTIONAL, "<text scale>", nullptr, nullptr,
+	                  -1, nullptr, "Draw a frame/bandwidth counter overlay" });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -1478,6 +1484,28 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 					return -2;
 				}
 			}
+		}
+		else if (strcmp(arg->Name, sdl_show_damage) == 0)
+		{
+			SdlWindow::setShowDamage(arg->Value != nullptr);
+		}
+		else if (strcmp(arg->Name, sdl_show_stats) == 0)
+		{
+			/* The value is optional and doubles as the text scale, so a plain
+			 * /sdl-show-stats keeps the default. */
+			float scale = 0.0f;
+			if (arg->Value != nullptr)
+			{
+				const auto val = strtof(arg->Value, nullptr);
+				if (val <= 0.0f)
+				{
+					WLog_ERR(CLIENT_TAG("SDL"), "Invalid /%s value '%s', expected a scale > 0",
+					         sdl_show_stats, arg->Value);
+					return -2;
+				}
+				scale = val;
+			}
+			SdlWindow::setShowStats(true, scale);
 		}
 	}
 	return 0;
