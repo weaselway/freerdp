@@ -49,6 +49,11 @@ set(SRCS
     sdl_context.cpp
 )
 
+if(WIN32)
+  list(APPEND SRCS sdl_win32_touchpad.hpp sdl_win32_touchpad.cpp)
+  list(APPEND LIBS hid)
+endif()
+
 add_win_console_manifest(SRCS)
 
 list(

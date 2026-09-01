@@ -76,6 +76,7 @@
 #include "sdl_prefs.hpp"
 #if defined(_WIN32)
 #include "sdl_win32_console.hpp"
+#include "sdl_win32_touchpad.hpp"
 #endif
 #include "sdl_utils.hpp"
 
@@ -348,6 +349,9 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 		WLog_ERR(SDL_TAG, "WSAStartup failed with %s [%d]", gai_strerrorA(rc), rc);
 		return FALSE;
 	}
+
+	if (!sdl::win32::touchpad::initialize())
+		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
 #endif
 
 	return (freerdp_handle_signals() == 0);
@@ -357,6 +361,7 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 static void sdl_client_global_uninit()
 {
 #if defined(_WIN32)
+	sdl::win32::touchpad::shutdown();
 	WSACleanup();
 #endif
 }
