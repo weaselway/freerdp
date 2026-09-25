@@ -22,7 +22,7 @@ if ! command -v docker >/dev/null; then
     exit 1
 fi
 
-docker build -t "$IMAGE" -f "$SCRIPT_DIR/Dockerfile" .
+docker build -t "$IMAGE" -f "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
 
 if [ $# -eq 0 ]; then
     set -- ./build-freerdp.sh
