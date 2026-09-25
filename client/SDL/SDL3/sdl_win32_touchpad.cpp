@@ -201,6 +201,13 @@ namespace
 	 * Non-empty if and only if a gesture is currently being forwarded. */
 	std::unordered_map<UINT32, ActiveContact> g_activeContacts;
 
+	/* The window that had keyboard focus when the gesture started. Every
+	 * event of the gesture, including the watchdog's lifts, goes to it:
+	 * SdlContext drops finger events for a window ID it doesn't know (0 in
+	 * particular), which used to leave the server with a gesture that never
+	 * ended. */
+	SDL_WindowID g_gestureWindowID = 0;
+
 	[[nodiscard]] FingerField* findFinger(std::vector<FingerField>& fingers,
 	                                      USHORT linkCollection)
 	{
@@ -385,6 +392,19 @@ namespace
 		SDL_PushEvent(&ev);
 	}
 
+	/* Lifts every forwarded contact where it currently is. */
+	void endGesture(const char* reason)
+	{
+		for (const auto& entry : g_activeContacts)
+		{
+			WLog_VRB(TAG, "touchpad contact id=%" PRIu32 " event=up (%s)", entry.first, reason);
+			pushFingerEvent(g_gestureWindowID, SDL_EVENT_FINGER_UP, entry.first,
+			                entry.second.lastX, entry.second.lastY);
+		}
+		g_activeContacts.clear();
+		g_gestureWindowID = 0;
+	}
+
 	/* Below this many simultaneous fingers, the OS's normal touchpad-to-mouse
 	 * (single finger) and two-finger-scroll handling already does the right
 	 * thing on its own, driven by relative touchpad movement. Forwarding
@@ -417,8 +437,13 @@ namespace
 
 		SDL_Window* focus = SDL_GetKeyboardFocus();
 		if (!focus)
+		{
+			endGesture("focus lost");
 			return;
-		const SDL_WindowID windowID = SDL_GetWindowID(focus);
+		}
+		if (g_activeContacts.empty())
+			g_gestureWindowID = SDL_GetWindowID(focus);
+		const SDL_WindowID windowID = g_gestureWindowID;
 
 		/* Every finger slot this report could be decoded into, in
 		 * descriptor order, whether or not its TipSwitch says it's touching.
@@ -645,14 +670,7 @@ namespace
 			/* Genuinely dropped below threshold: end everything, matching
 			 * the "stay silent below 3" design -- whichever fingers are
 			 * still (grace-period-)active don't get to keep going alone. */
-			for (const auto& entry : g_activeContacts)
-			{
-				WLog_VRB(TAG, "touchpad contact id=%" PRIu32 " event=up (below threshold)",
-				         entry.first);
-				pushFingerEvent(windowID, SDL_EVENT_FINGER_UP, entry.first, entry.second.lastX,
-				                entry.second.lastY);
-			}
-			g_activeContacts.clear();
+			endGesture("below threshold");
 		}
 	}
 
@@ -718,17 +736,7 @@ namespace
 		if ((SDL_GetTicks() - g_lastReportTick) < kContactStaleTimeoutMs)
 			return;
 
-		SDL_Window* focus = SDL_GetKeyboardFocus();
-		const SDL_WindowID windowID = focus ? SDL_GetWindowID(focus) : 0;
-
-		for (const auto& entry : g_activeContacts)
-		{
-			WLog_VRB(TAG, "touchpad contact id=%" PRIu32 " event=up (no reports for %" PRIu64 "ms)",
-			         entry.first, static_cast<uint64_t>(kContactStaleTimeoutMs));
-			pushFingerEvent(windowID, SDL_EVENT_FINGER_UP, entry.first, entry.second.lastX,
-			                entry.second.lastY);
-		}
-		g_activeContacts.clear();
+		endGesture("no reports");
 	}
 
 	bool SDLCALL sdl_win32_raw_input_hook(void* userdata, MSG* msg)
@@ -786,6 +794,11 @@ namespace sdl
 				return true;
 			}
 
+			void cancelGesture()
+			{
+				endGesture("focus lost");
+			}
+
 			void shutdown()
 			{
 				SDL_SetWindowsMessageHook(nullptr, nullptr);
@@ -798,6 +811,7 @@ namespace sdl
 
 				g_devices.clear();
 				g_activeContacts.clear();
+				g_gestureWindowID = 0;
 
 				RAWINPUTDEVICE rid{};
 				rid.usUsagePage = HID_USAGE_PAGE_DIGITIZER;
