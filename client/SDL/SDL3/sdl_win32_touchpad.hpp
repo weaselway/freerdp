@@ -44,6 +44,12 @@ namespace sdl
 			 * interception hook. Returns false if registration failed. */
 			[[nodiscard]] bool initialize();
 			void shutdown();
+
+			/* Lifts all contacts of a gesture in progress. Called when the
+			 * window loses focus (Alt+Tab, Win key, ...): no further reports
+			 * reach us then, and the server would otherwise be left with a
+			 * gesture that only the watchdog ends. */
+			void cancelGesture();
 		} // namespace touchpad
 	} // namespace win32
 } // namespace sdl

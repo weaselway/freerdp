@@ -33,6 +33,10 @@
 #include "dialogs/sdl_dialogs.hpp"
 #include <freerdp/client/aad_helper.h>
 
+#if defined(_WIN32)
+#include "sdl_win32_touchpad.hpp"
+#endif
+
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
 static constexpr auto sdl_show_damage = "sdl-show-damage";
 static constexpr auto sdl_show_stats = "sdl-show-stats";
@@ -1252,6 +1256,11 @@ bool SdlContext::handleEvent(const SDL_WindowEvent& ev)
 	{
 		case SDL_EVENT_WINDOW_MOUSE_ENTER:
 			return restoreCursor();
+		case SDL_EVENT_WINDOW_FOCUS_LOST:
+#if defined(_WIN32)
+			sdl::win32::touchpad::cancelGesture();
+#endif
+			break;
 		case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
 			if (!resizeToScale(window))
 				return false;

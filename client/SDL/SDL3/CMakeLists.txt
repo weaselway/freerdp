@@ -114,6 +114,8 @@ if(NOT WIN32 AND NOT APPLE)
     include_directories(SYSTEM ${CMAKE_CURRENT_BINARY_DIR}/wayland)
     list(APPEND SRCS ${WAYLAND_SRCS})
   endif()
+endif()
+
 if(WIN32)
   list(APPEND SRCS sdl_win32_touchpad.hpp sdl_win32_touchpad.cpp)
   list(APPEND LIBS hid)
