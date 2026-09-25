@@ -14,6 +14,8 @@ BUILD_DIR="${SOURCE}/build/freerdp"
 # and the DLLs get copied next to the client below.
 SDL3_VERSION=3.4.14
 SDL3_TTF_VERSION=3.2.2
+SDL3_SHA256=daad6044f75689ea5edb34eed0cc6dccac85246a3f469714d46da3a178ea7edc
+SDL3_TTF_SHA256=bb57f26787d6a2e108158562feb061fcdf6f68a110f9c8cf9af42ff343d4e41c
 
 # MSYS2's prebuilt mingw OpenSSL, used in place of whatever the host toolchain
 # happens to ship for the target (the Arch cross toolchain has none at all).
@@ -28,6 +30,7 @@ SDL3_TTF_VERSION=3.2.2
 # UCRT link fails on symbols only the old runtime exported, e.g.
 # "undefined reference to `__imp__vsnprintf'" out of libcrypto.a.
 OPENSSL_VERSION=3.6.3-1
+OPENSSL_SHA256=6cab3e35b2b05da3a34126f3fdb7a4d0c942842c8cde355f53a07a717684313a
 
 # Fetched dependencies, not sources, so they live under build/ with everything
 # else that is generated -- and are covered by its .gitignore entry.
@@ -43,8 +46,9 @@ OPENSSL_PREFIX=$OPENSSL_DIR/ucrt64
 
 # Fetch and unpack the archives if they are not already here. Each ends up as
 # exactly the directory name built above, so the directory existing is the test
-# for "already have it" -- there is nothing else to check against, as neither
-# upstream publishes a checksum alongside the download.
+# for "already have it". Neither upstream publishes a checksum next to the
+# download, so the SHA256s above were recorded when the version was pinned:
+# changing a version means updating its hash too.
 #
 # $3 picks the layout. The SDL tarballs are "wrapped": they carry their own
 # top-level directory, so they unpack into the parent -- extracting into $dir
@@ -52,7 +56,7 @@ OPENSSL_PREFIX=$OPENSSL_DIR/ucrt64
 # mingw64/ plus the package metadata files, so it gets a directory of its own
 # to keep that spill out of build/.
 fetch_dep() {
-    local dir=$1 url=$2 layout=$3 tarball dest
+    local dir=$1 url=$2 layout=$3 sha256=$4 tarball dest
 
     if [ -d "$dir" ]; then
         return 0
@@ -62,6 +66,12 @@ fetch_dep() {
     echo "build-freerdp.sh: fetching $(basename "$tarball")"
     mkdir -p "${SOURCE}/build"
     curl -fsSL --retry 3 -o "$tarball" "$url"
+
+    if ! echo "$sha256  $tarball" | sha256sum -c --quiet -; then
+        echo "build-freerdp.sh: checksum mismatch for $(basename "$tarball")" >&2
+        rm -f "$tarball"
+        return 1
+    fi
 
     if [ "$layout" = wrapped ]; then
         dest=$(dirname "$dir")
@@ -81,15 +91,15 @@ fetch_dep() {
 
 fetch_dep "$SDL3_DIR" \
     "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz" \
-    wrapped
+    wrapped "$SDL3_SHA256"
 
 fetch_dep "$SDL3_TTF_DIR" \
     "https://github.com/libsdl-org/SDL_ttf/releases/download/release-$SDL3_TTF_VERSION/SDL3_ttf-devel-$SDL3_TTF_VERSION-mingw.tar.gz" \
-    wrapped
+    wrapped "$SDL3_TTF_SHA256"
 
 fetch_dep "$OPENSSL_DIR" \
     "https://mirror.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-openssl-$OPENSSL_VERSION-any.pkg.tar.zst" \
-    bare
+    bare "$OPENSSL_SHA256"
 
 if [ ! -d "$OPENSSL_PREFIX" ]; then
     echo "build-freerdp.sh: $OPENSSL_DIR has no $(basename "$OPENSSL_PREFIX")/ prefix" >&2
