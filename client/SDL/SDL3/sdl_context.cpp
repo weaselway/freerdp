@@ -1803,14 +1803,19 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 
 	/* Clip to the buffer; the server's target size can lead the buffer by a
 	 * frame around a resize. */
+	/* The fields are UINT32 off the wire: compare in 64 bits, a cast to int
+	 * turns large values negative and lets them through. */
 	const auto& dirty = present->dirtyRect;
-	if ((static_cast<int>(dirty.left) >= width) || (static_cast<int>(dirty.top) >= height))
+	if ((width <= 0) || (height <= 0) || (static_cast<UINT64>(dirty.left) >= mapping.width) ||
+	    (static_cast<UINT64>(dirty.top) >= mapping.height))
 		return false;
 
+	const auto clippedW =
+	    std::min<UINT64>(dirty.width, static_cast<UINT64>(mapping.width) - dirty.left);
+	const auto clippedH =
+	    std::min<UINT64>(dirty.height, static_cast<UINT64>(mapping.height) - dirty.top);
 	SDL_Rect rect{ static_cast<int>(dirty.left), static_cast<int>(dirty.top),
-		           std::min(static_cast<int>(dirty.width), width - static_cast<int>(dirty.left)),
-		           std::min(static_cast<int>(dirty.height),
-		                    height - static_cast<int>(dirty.top)) };
+		           static_cast<int>(clippedW), static_cast<int>(clippedH) };
 	if ((rect.w <= 0) || (rect.h <= 0))
 		return false;
 
