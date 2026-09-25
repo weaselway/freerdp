@@ -141,6 +141,9 @@ namespace
 	 * swipe doesn't, falls back to accumulated progress, and that progress
 	 * had already plateaued. */
 	constexpr float kGestureAnchor = 0.5f;
+	/* Sensitivity is tuned server side (META_RDP_GESTURE_DELTA_SCALE in
+	 * mutter's meta-rdp-server.c, which also normalizes by desktop size), so
+	 * leave this alone and change that instead. */
 	constexpr float kGestureScale = 2.5f;
 
 	/* Precision Touchpad firmware commonly can't fit every simultaneously-
