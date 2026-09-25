@@ -107,6 +107,12 @@ class SdlContext
 
 	void setMetadata();
 
+	/* /sdl-touchpad-gestures: forward 3+ finger touchpad gestures as
+	 * touch contacts (Windows only). Off by default: only a server that
+	 * turns such contacts back into gestures (weaselway's mutter) wants
+	 * them. */
+	[[nodiscard]] bool touchpadGestures() const;
+
 	[[nodiscard]] int start();
 	[[nodiscard]] int join();
 	[[nodiscard]] bool shallAbort(bool ignoreDialogs = false);
@@ -316,4 +322,5 @@ class SdlContext
 	std::optional<bool> _allowScreenSaver;
 	std::vector<rdpPointer*> _valid_pointers;
 	bool _credentialsRead = false;
+	bool _touchpadGestures = false;
 };
