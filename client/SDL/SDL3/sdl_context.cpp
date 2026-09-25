@@ -36,6 +36,7 @@
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
 static constexpr auto sdl_show_damage = "sdl-show-damage";
 static constexpr auto sdl_show_stats = "sdl-show-stats";
+static constexpr auto sdl_touchpad_gestures = "sdl-touchpad-gestures";
 
 SdlContext::SdlContext(rdpContext* context)
     : _context(context), _log(WLog_Get(CLIENT_TAG("SDL"))), _cursor(nullptr, sdl_Pointer_FreeCopy),
@@ -69,6 +70,9 @@ SdlContext::SdlContext(rdpContext* context)
 	                  -1, nullptr, "Tint the regions updated in each frame" });
 	_args.push_back({ sdl_show_stats, COMMAND_LINE_VALUE_OPTIONAL, "<text scale>", nullptr, nullptr,
 	                  -1, nullptr, "Draw a frame/bandwidth counter overlay" });
+	_args.push_back({ sdl_touchpad_gestures, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
+	                  nullptr, -1, nullptr,
+	                  "Forward 3+ finger touchpad gestures as touch input (Windows)" });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -1587,6 +1591,11 @@ bool SdlContext::handleEvent(const SDL_Event& ev)
 	}
 }
 
+bool SdlContext::touchpadGestures() const
+{
+	return _touchpadGestures;
+}
+
 COMMAND_LINE_ARGUMENT_A* SdlContext::args()
 {
 	return _args.data();
@@ -1623,6 +1632,10 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		else if (strcmp(arg->Name, sdl_show_damage) == 0)
 		{
 			SdlWindow::setShowDamage(arg->Value != nullptr);
+		}
+		else if (strcmp(arg->Name, sdl_touchpad_gestures) == 0)
+		{
+			sdl->_touchpadGestures = arg->Value != nullptr;
 		}
 		else if (strcmp(arg->Name, sdl_show_stats) == 0)
 		{

@@ -357,9 +357,6 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 		WLog_ERR(SDL_TAG, "WSAStartup failed with %s [%d]", gai_strerrorA(rc), rc);
 		return FALSE;
 	}
-
-	if (!sdl::win32::touchpad::initialize())
-		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
 #endif
 
 	return (freerdp_handle_signals() == 0);
@@ -369,7 +366,6 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 static void sdl_client_global_uninit()
 {
 #if defined(_WIN32)
-	sdl::win32::touchpad::shutdown();
 	WSACleanup();
 #endif
 }
@@ -724,10 +720,22 @@ int main(int argc, char* argv[])
 	WLog_Print(sdl->getWLog(), WLOG_DEBUG, "client is using backend '%s'", backend);
 	sdl_dialogs_init();
 
+#if defined(_WIN32)
+	/* Registers on this thread, which runs the SDL event loop: the gesture
+	 * watchdog timer posts to it. */
+	const bool touchpad = sdl->touchpadGestures() && sdl::win32::touchpad::initialize();
+	if (sdl->touchpadGestures() && !touchpad)
+		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
+#endif
+
 	/* SDL cleanup code if the client exits */
 	ScopeGuard guard(
 	    [&]()
 	    {
+#if defined(_WIN32)
+		    if (touchpad)
+			    sdl::win32::touchpad::shutdown();
+#endif
 		    sdl->cleanup();
 		    freerdp_del_signal_cleanup_handler(sdl->context(), sdl_term_handler);
 		    sdl_dialogs_uninit();
