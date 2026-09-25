@@ -906,6 +906,20 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 	if (!isConnected())
 		return true;
 
+	if (!uploadToWindow(window, rects))
+		return false;
+
+	/* Outside _critical: with vsync, presenting blocks until the next
+	 * refresh, and the channel threads need the lock to queue frames. */
+	window.updateSurface();
+	return true;
+}
+
+bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects)
+{
+	if (!isConnected())
+		return true;
+
 	auto gdi = context()->gdi;
 	WINPR_ASSERT(gdi);
 
@@ -925,6 +939,8 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 
 		const UINT64 presentId =
 		    _gfxRedirPending.empty() ? 0 : _gfxRedirPending.back().presentId;
+		if (presentId != 0)
+			_gfxRedirDrawnPresentId = presentId;
 
 		if (rects.empty())
 		{
@@ -971,7 +987,6 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 			return false;
 	}
 
-	window.updateSurface();
 	return true;
 }
 
@@ -1706,13 +1721,21 @@ void SdlContext::gfxRedirCompletePresent()
 			return;
 
 		redir = _gfxRedir;
-		pending.swap(_gfxRedirPending);
 		drawnAt = _gfxRedirDrawnAt;
+
+		/* Only presents older than the one last drawn: those are superseded.
+		 * The drawn one stays (see the header), and anything queued after the
+		 * upload hasn't been looked at yet. Present ids only grow. */
+		const auto drawn = _gfxRedirDrawnPresentId;
+		auto keep = std::stable_partition(_gfxRedirPending.begin(), _gfxRedirPending.end(),
+		                           [drawn](const GfxRedirPending& p)
+		                           { return p.presentId < drawn; });
+		pending.assign(_gfxRedirPending.begin(), keep);
+		_gfxRedirPending.erase(_gfxRedirPending.begin(), keep);
 	}
 
-	/* The upload drew the newest frame, which supersedes any older presents
-	 * still queued -- but every one of them still owes the server an ack
-	 * before it will reuse that buffer. Ack them in order. */
+	/* Every superseded present still owes the server an ack before it will
+	 * reuse that buffer. Ack them in order. */
 	const auto now = GetTickCount64();
 	for (const auto& entry : pending)
 	{
@@ -1741,15 +1764,26 @@ void SdlContext::gfxRedirReset()
 	_gfxRedirBuffers.clear();
 	_gfxRedir = nullptr;
 	_gfxRedirPending.clear();
+	_gfxRedirDrawnPresentId = 0;
 }
 
 bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
 {
+	if (!isConnected())
+		return true;
+
 	for (auto& window : _windows)
 	{
-		if (!drawToWindow(window.second, rects))
+		if (!uploadToWindow(window.second, rects))
 			return FALSE;
 	}
+
+	/* The uploads were the last read of the superseded gfxredir buffers, so
+	 * hand them back before waiting for vsync. */
+	gfxRedirCompletePresent();
+
+	for (auto& window : _windows)
+		window.second.updateSurface();
 
 	return TRUE;
 }

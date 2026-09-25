@@ -261,10 +261,8 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 
 						WLog_Print(sdl->getWLog(), WLOG_DEBUG,
 						           "update event drained in %" PRIuz " passes", passes);
-
-						/* The upload above is the last read of the gfxredir
-						 * shared memory, so the server may reuse it now. */
-						sdl->gfxRedirCompletePresent();
+						/* drawToWindows() acks the gfxredir presents it has
+						 * superseded, between upload and present. */
 					}
 					break;
 					case SDL_EVENT_USER_CREATE_WINDOWS:
