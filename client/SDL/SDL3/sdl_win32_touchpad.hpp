@@ -31,13 +31,12 @@ namespace sdl
 		 * ERROR_ACCESS_DENIED regardless of process elevation or Authenticode
 		 * signing.
 		 *
-		 * This is a diagnostic-stage module: it registers for Raw Input HID
-		 * reports on the Digitizer/TouchPad usage (page 0x0D, usage 0x05),
-		 * which taps the HID report stream directly rather than going through
-		 * either higher-level abstraction, and logs whatever it receives.
-		 * Once confirmed that reports actually arrive, this will be extended
-		 * to parse contact data via the HidP_* report-descriptor parser and
-		 * feed it into the existing SdlTouch / RDPEI pipeline. */
+		 * So this registers for Raw Input HID reports on the
+		 * Digitizer/TouchPad usage (page 0x0D, usage 0x05), which taps the
+		 * HID report stream directly, decodes the contacts with the HidP_*
+		 * report-descriptor parser, and forwards 3+ finger gestures as
+		 * synthetic SDL finger events into the SdlTouch / RDPEI pipeline.
+		 * Enabled with /sdl-touchpad-gestures. */
 		namespace touchpad
 		{
 			/* Registers the Raw Input device and installs the global WM_INPUT

@@ -82,6 +82,17 @@ namespace
 		LONG yLogicalMax = 0;
 	};
 
+	struct DecodedContact
+	{
+		UINT32 contactId = 0;
+		USHORT linkCollection = 0;
+		ULONG rawX = 0;
+		ULONG rawY = 0;
+		float x = 0.0f;
+		float y = 0.0f;
+		bool tipDown = false;
+	};
+
 	struct DeviceInfo
 	{
 		std::vector<BYTE> preparsedBuffer; /* owns the memory PHIDP_PREPARSED_DATA points into */
@@ -94,6 +105,13 @@ namespace
 		 * decodeReport(). */
 		bool hasContactCount = false;
 		USHORT contactCountLinkCollection = 0;
+
+		/* Partial frame accumulated across a chain of reports, and how many
+		 * contacts of the frame the device still owes us. Per device, so a
+		 * second touchpad's reports can't splice into this one's frame. See
+		 * decodeReport(). */
+		std::vector<DecodedContact> framePending;
+		size_t frameRemaining = 0;
 	};
 
 	/* Keyed by the Raw Input device handle. Only ever touched from the
@@ -415,22 +433,6 @@ namespace
 	 * get forwarded. */
 	constexpr size_t kMinContactsToForward = 3;
 
-	struct DecodedContact
-	{
-		UINT32 contactId = 0;
-		USHORT linkCollection = 0;
-		ULONG rawX = 0;
-		ULONG rawY = 0;
-		float x = 0.0f;
-		float y = 0.0f;
-		bool tipDown = false;
-	};
-
-	/* Partial frame accumulated across a chain of reports, and how many
-	 * contacts of the frame the device still owes us. See decodeReport(). */
-	std::vector<DecodedContact> g_framePending;
-	size_t g_frameRemaining = 0;
-
 	void decodeReport(DeviceInfo& info, BYTE* report, DWORD reportLen)
 	{
 		g_lastReportTick = SDL_GetTicks();
@@ -543,20 +545,20 @@ namespace
 			if (contactCount > 0)
 			{
 				/* First report of a new frame. */
-				g_framePending.clear();
-				g_frameRemaining = contactCount;
+				info.framePending.clear();
+				info.frameRemaining = contactCount;
 			}
 
-			const size_t live = std::min<size_t>(g_frameRemaining, slots.size());
-			g_framePending.insert(g_framePending.end(), slots.begin(),
+			const size_t live = std::min<size_t>(info.frameRemaining, slots.size());
+			info.framePending.insert(info.framePending.end(), slots.begin(),
 			                      std::next(slots.begin(), static_cast<ptrdiff_t>(live)));
-			g_frameRemaining -= live;
+			info.frameRemaining -= live;
 
-			if (g_frameRemaining > 0)
+			if (info.frameRemaining > 0)
 				return; /* chained frame, still incomplete -- wait for the rest */
 
-			frame = std::move(g_framePending);
-			g_framePending.clear();
+			frame = std::move(info.framePending);
+			info.framePending.clear();
 		}
 		else
 		{
