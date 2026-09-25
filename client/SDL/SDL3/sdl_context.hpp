@@ -120,12 +120,19 @@ class SdlContext
 
 	[[nodiscard]] bool drawToWindows(const std::vector<SDL_Rect>& rects = {});
 	[[nodiscard]] bool drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects = {});
+	/* The part of drawToWindow() that reads the source surface, under
+	 * _critical. Presenting (which may block on vsync) is left to the caller,
+	 * to do without the lock. */
+	[[nodiscard]] bool uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& rects);
 
 	/* gfxredir presents straight out of the server's shared memory: the
 	 * texture upload reads the mapped pool, with no copy into the gdi primary
 	 * buffer on the way. queuePresent() runs on the channel thread and only
 	 * publishes the buffer; completePresent() runs on the SDL thread once the
-	 * upload is done and releases the buffer back to the server. */
+	 * upload is done and releases the buffers of presents that have been
+	 * superseded by a drawn one back to the server. The newest drawn present
+	 * is kept: a redraw that isn't driven by a present (expose, scale change)
+	 * uploads from its buffer again, so the server must not reuse it yet. */
 	[[nodiscard]] bool gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	                                        const GFXREDIR_PRESENT_BUFFER_PDU* present);
 	void gfxRedirCompletePresent();
@@ -277,6 +284,9 @@ class SdlContext
 
 	GfxRedirClientContext* _gfxRedir = nullptr;
 	std::vector<GfxRedirPending> _gfxRedirPending;
+	/* Newest present whose pixels have been uploaded; everything older is
+	 * superseded and can be acked. 0 = nothing drawn yet. */
+	UINT64 _gfxRedirDrawnPresentId = 0;
 
 	/* Tracing: how a frame moves from the channel thread to the screen. */
 	UINT64 _gfxRedirDrawnAt = 0;    /* tick when the SDL thread last uploaded */
