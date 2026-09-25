@@ -32,6 +32,10 @@
 
 #include "dialogs/sdl_dialogs.hpp"
 
+#if defined(_WIN32)
+#include "sdl_win32_touchpad.hpp"
+#endif
+
 #if defined(WITH_WEBVIEW)
 #include <aad/sdl_webview.hpp>
 #endif
@@ -1151,6 +1155,11 @@ bool SdlContext::handleEvent(const SDL_WindowEvent& ev)
 	{
 		case SDL_EVENT_WINDOW_MOUSE_ENTER:
 			return restoreCursor();
+		case SDL_EVENT_WINDOW_FOCUS_LOST:
+#if defined(_WIN32)
+			sdl::win32::touchpad::cancelGesture();
+#endif
+			break;
 		case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
 			if (!resizeToScale(window))
 				return false;
