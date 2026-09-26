@@ -235,32 +235,20 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 					break;
 					case SDL_EVENT_USER_UPDATE:
 					{
-						/* Drain every queued batch, but do not draw the empty
-						 * vector that terminates the queue: an empty rect list
-						 * means "refresh everything", so the old do/while
-						 * followed each update with a redundant full-screen
-						 * upload. Only fall back to a full refresh when the
-						 * event carried no rectangles at all. */
-						size_t passes = 0;
-						for (;;)
-						{
-							auto rectangles = sdl->pop();
-							if (rectangles.empty())
-								break;
+						/* Everything queued since the last update, merged into a
+						 * single upload and a single (vsync-bound) present. The
+						 * producers always queue at least one rect, so an empty
+						 * list means there is nothing to draw -- it must not
+						 * become a full-screen refresh. */
+						const auto rectangles = sdl->popAll();
+						if (rectangles.empty())
+							break;
 
-							passes++;
-							if (!sdl->drawToWindows(rectangles))
-								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
-						}
+						if (!sdl->drawToWindows(rectangles))
+							throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
 
-						if (passes == 0)
-						{
-							if (!sdl->drawToWindows({}))
-								throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
-						}
-
-						WLog_Print(sdl->getWLog(), WLOG_DEBUG,
-						           "update event drained in %" PRIuz " passes", passes);
+						WLog_Print(sdl->getWLog(), WLOG_DEBUG, "update event drew %" PRIuz " rects",
+						           rectangles.size());
 						/* drawToWindows() acks the gfxredir presents it has
 						 * superseded, between upload and present. */
 					}

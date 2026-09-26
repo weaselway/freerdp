@@ -95,8 +95,11 @@ class SdlContext
 	[[nodiscard]] const std::vector<SDL_DisplayID>& monitorIds() const;
 	[[nodiscard]] int64_t monitorId(uint32_t index) const;
 
-	void push(std::vector<SDL_Rect>&& rects);
-	[[nodiscard]] std::vector<SDL_Rect> pop();
+	/* Queue dirty rects for the SDL thread. At most one SDL_EVENT_USER_UPDATE
+	 * is pending at a time: popAll() takes everything queued since, so a slow
+	 * SDL thread draws one merged frame instead of falling further behind. */
+	[[nodiscard]] bool pushUpdate(std::vector<SDL_Rect>&& rects);
+	[[nodiscard]] std::vector<SDL_Rect> popAll();
 
 	void setHasCursor(bool val);
 	[[nodiscard]] bool hasCursor() const;
@@ -237,6 +240,7 @@ class SdlContext
 	std::vector<SDL_DisplayID> _monitorIds;
 	std::mutex _queue_mux;
 	std::queue<std::vector<SDL_Rect>> _queue;
+	bool _updatePending = false; /* guarded by _queue_mux */
 	/* SDL */
 	bool _fullscreen = false;
 	bool _resizeable = false;
