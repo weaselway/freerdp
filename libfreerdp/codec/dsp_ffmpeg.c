@@ -102,7 +102,9 @@ static enum AVCodecID ffmpeg_get_avcodec(const AUDIO_FORMAT* WINPR_RESTRICT form
 			switch (format->wBitsPerSample)
 			{
 				case 16:
-					return AV_CODEC_ID_PCM_U16LE;
+					/* WAVE_FORMAT_PCM is signed at 16 bits (only 8-bit PCM is
+					 * unsigned); matches ffmpeg_sample_format() below. */
+					return AV_CODEC_ID_PCM_S16LE;
 
 				case 8:
 					return AV_CODEC_ID_PCM_U8;
