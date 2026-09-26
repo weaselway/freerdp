@@ -569,8 +569,7 @@ BOOL SdlContext::endPaint(rdpContext* context)
 		rects.push_back({ rgn.x, rgn.y, rgn.w, rgn.h });
 	}
 
-	sdl->push(std::move(rects));
-	return sdl_push_user_event(SDL_EVENT_USER_UPDATE);
+	return sdl->pushUpdate(std::move(rects));
 }
 
 void SdlContext::sdl_client_cleanup(int exit_code, const std::string& error_msg)
@@ -1843,8 +1842,7 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	           present->presentId, present->bufferId, rect.w, rect.h, rect.x, rect.y, inflight,
 	           queueCount, drawCount, dropCount);
 
-	push({ rect });
-	return sdl_push_user_event(SDL_EVENT_USER_UPDATE);
+	return pushUpdate({ rect });
 }
 
 /* Called on the SDL thread once the texture upload has read the shared memory.
@@ -2149,22 +2147,64 @@ int64_t SdlContext::monitorId(uint32_t index) const
 	return _monitorIds.at(index);
 }
 
-void SdlContext::push(std::vector<SDL_Rect>&& rects)
+bool SdlContext::pushUpdate(std::vector<SDL_Rect>&& rects)
 {
+	bool notify = false;
+	{
+		std::unique_lock lock(_queue_mux);
+		_queue.emplace(std::move(rects));
+		notify = !_updatePending;
+		_updatePending = true;
+	}
+
+	/* One event per frame used to pile up behind a vsync-bound SDL thread, and
+	 * SDL only pumps OS input once it has worked through its queue, so input,
+	 * resize and close stalled while frames kept being drawn. */
+	if (!notify)
+		return true;
+
+	if (sdl_push_user_event(SDL_EVENT_USER_UPDATE))
+		return true;
+
+	/* Let the next frame try again rather than leaving the rects stranded. */
 	std::unique_lock lock(_queue_mux);
-	_queue.emplace(std::move(rects));
+	_updatePending = false;
+	return false;
 }
 
-std::vector<SDL_Rect> SdlContext::pop()
+std::vector<SDL_Rect> SdlContext::popAll()
 {
 	std::unique_lock lock(_queue_mux);
-	if (_queue.empty())
+	/* Cleared together with taking the queue: a push after this sees false and
+	 * sends a new event, so no update is lost. */
+	_updatePending = false;
+
+	/* Merge overlapping rects into their bounding box so no pixel is uploaded
+	 * twice: batches that piled up often damage the same area (for gfxredir
+	 * frequently the whole screen), and every rect is read from the same
+	 * newest buffer anyway. The result stays pairwise disjoint: a rect keeps
+	 * absorbing whatever it overlaps, including what it grew into. */
+	std::vector<SDL_Rect> rects;
+	while (!_queue.empty())
 	{
-		return {};
+		for (auto rect : _queue.front())
+		{
+			for (auto it = rects.begin(); it != rects.end();)
+			{
+				if (SDL_HasRectIntersection(&*it, &rect))
+				{
+					SDL_GetRectUnion(&*it, &rect, &rect);
+					rects.erase(it);
+					it = rects.begin();
+				}
+				else
+					++it;
+			}
+			rects.push_back(rect);
+		}
+		_queue.pop();
 	}
-	auto val = std::move(_queue.front());
-	_queue.pop();
-	return val;
+	return rects;
 }
 
 bool SdlContext::setFullscreen(bool enter, bool forceOriginalDisplay)
