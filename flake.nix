@@ -98,7 +98,9 @@
 
             installPhase = ''
               runHook preInstall
-              install -Dm644 -t $out/bin build/sdl-freerdp.exe build/SDL3.dll build/SDL3_ttf.dll
+              # Executable, or WSL interop will not run it from the store.
+              install -Dm755 -t $out/bin build/sdl-freerdp.exe
+              install -Dm644 -t $out/bin build/SDL3.dll build/SDL3_ttf.dll
               runHook postInstall
             '';
           };
