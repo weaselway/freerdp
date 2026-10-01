@@ -19,12 +19,15 @@
  */
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <SDL3/SDL.h>
 
 #include <freerdp/settings_types.h>
+
+class SdlD3D11Presenter;
 
 class SdlWindow
 {
@@ -52,6 +55,26 @@ class SdlWindow
 	[[nodiscard]] SDL_Rect bounds() const;
 	[[nodiscard]] SDL_Window* window() const;
 	[[nodiscard]] SDL_Renderer* renderer() const;
+
+	/* /sdl-presenter (Windows, on by default): draw with our own Direct3D 11
+	 * device instead of an SDL_Renderer. Process wide, set before any window
+	 * exists; turned off again if a window can't set it up. /sdl-show-damage
+	 * needs the SDL renderer and wins. A window drawing this way must only be
+	 * drawn to from the context's render thread. */
+	static void setPresenter(bool enable);
+	[[nodiscard]] static bool presenterEnabled();
+	[[nodiscard]] bool hasPresenter() const;
+
+	/* For the render thread. presentHandle() is a Win32 HANDLE to wait on
+	 * before updateSurface() once presentPending() is set; presentSlot() tells
+	 * the window that wait succeeded. */
+	[[nodiscard]] void* presentHandle() const;
+	[[nodiscard]] bool presentPending() const;
+	[[nodiscard]] bool hasPresentSlot() const;
+	void presentSlot();
+	/* True once after the presenter lost what it had drawn (device lost) and
+	 * needs the whole desktop again. */
+	[[nodiscard]] bool takeRedrawRequest();
 
 	[[nodiscard]] Sint32 offsetX() const;
 	void setOffsetX(Sint32 x);
@@ -103,6 +126,41 @@ class SdlWindow
 	 * The scale, if > 0, is the text scale; the built-in debug font is 8px,
 	 * which is unreadable on a HiDPI panel. Process wide. */
 	static void setShowStats(bool enable, float scale = 2.0f);
+	[[nodiscard]] static bool showStats();
+
+	/* /sdl-no-vsync: present without waiting for the refresh. Tears, but takes
+	 * the vsync wait out of the frame path, to tell it apart from real work. */
+	static void setVSync(bool enable);
+
+	/* /sdl-stats-log:<file>: append the overlay's lines to a file. The console
+	 * is released at startup unless it was inherited from a Windows shell, so
+	 * stderr goes nowhere when started from WSL. Turns the stats on. */
+	static bool setStatsLog(const char* path);
+
+
+	/* Where a frame's time goes, in the order the stages run. Each is summed
+	 * over one frame (a frame can be several blits) and shown by the stats
+	 * overlay as avg/max per sampling window. */
+	enum StatStage
+	{
+		STAT_WAIT,      /* gfxredir present queued -> SDL thread starts on it */
+		STAT_LOCK,      /* waiting for the context lock */
+		STAT_UPLOAD,    /* SDL_UpdateTexture: shared memory -> GPU texture */
+		STAT_RENDER,    /* texture -> render target, flushed */
+		STAT_ACK,       /* returning superseded buffers to the server */
+		STAT_SWAPWAIT,  /* presenter only: uploaded, waiting for the swap chain */
+		STAT_COMPOSITE, /* render target -> backbuffer and overlays, flushed */
+		STAT_PRESENT,   /* SDL_RenderPresent */
+		STAT_TOTAL,     /* gfxredir present queued -> SDL_RenderPresent returned */
+		STAT_COUNT
+	};
+
+	/* SDL thread only. No-ops unless showStats() is on. */
+	static void addStat(StatStage stage, Uint64 ns);
+	/* SDL_GetTicksNS() at which the frame about to be drawn was queued. */
+	static void setFrameQueuedAt(Uint64 ns);
+	/* Any thread: a frame arrived from the server. */
+	static void countFrameIn();
 
   protected:
 	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags);
@@ -132,12 +190,23 @@ class SdlWindow
 	bool ensureGdiTexture(SDL_Surface* surface);
 
 	[[nodiscard]] static bool showDamage();
-	[[nodiscard]] static bool showStats();
+	[[nodiscard]] static bool vsync();
+	static void commitFrameStats();
 	[[nodiscard]] static float statsScale();
 
 	/* Draws the overlay onto the backbuffer. Call with the render target unset
 	 * and immediately before presenting. */
 	void renderStats();
+	/* The part of renderStats() that computes and logs the numbers. True if
+	 * they changed. */
+	bool updateStats();
+	void renderStatsText(SDL_Renderer* renderer);
+	[[nodiscard]] SDL_FRect statsBox() const;
+	void updatePresenterOverlay();
+
+	[[nodiscard]] bool presenterUpload(SDL_Surface* surface, SDL_Point offset,
+	                                   const SDL_FPoint& scale, const std::vector<SDL_Rect>& rects);
+	void presenterPresent();
 
 	/* Regions blitted since the last present, in render-target coordinates.
 	 * Only collected when showDamage() is on. */
@@ -149,7 +218,12 @@ class SdlWindow
 	Uint64 _statsFrames = 0;      /* presents */
 	Uint64 _statsBlits = 0;       /* SDL_UpdateTexture calls */
 	Uint64 _statsBytes = 0;       /* bytes handed to SDL_UpdateTexture */
-	std::string _statsText;       /* last formatted result, redrawn every frame */
+	std::vector<std::string> _statsText; /* last formatted result, redrawn every frame */
+
+	std::unique_ptr<SdlD3D11Presenter> _presenter;
+	bool _presentPending = false; /* uploaded, not presented yet */
+	bool _presentSlot = false;    /* the swap chain will take a frame */
+	Uint64 _presentPendingSince = 0;
 
 	SDL_Window* _window = nullptr;
 	SDL_Renderer* _renderer = nullptr;
