@@ -9,8 +9,11 @@ is installed.
 nix develop -c ./build-freerdp.sh
 ```
 
-Without Nix, [docker-env.sh](docker-env.sh) runs the same script in the Arch
-container from the [Dockerfile](Dockerfile).
+The same build as a package, which is what CI and the weaselway image use:
+
+```sh
+nix build .#sdl-freerdp      # result/bin/sdl-freerdp.exe, SDL3.dll, SDL3_ttf.dll
+```
 
 Output, all in `build/`:
 
@@ -45,3 +48,25 @@ again, or `cmake --build build/freerdp`.
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
   that.
+- cache.nixos.org has no mingw/UCRT cross gcc for x86_64 either, so a machine
+  that only uses it compiles the toolchain once. weaselway.cachix.org has it:
+
+  ```sh
+  nix develop \
+    --extra-substituters https://weaselway.cachix.org \
+    --extra-trusted-public-keys weaselway.cachix.org-1:aN6jpdbl2M5QNsR3U8zx1G/R0jHIkYkvX15G9jxPiHU= \
+    -c ./build-freerdp.sh
+  ```
+
+  That needs a trusted nix user; otherwise add both to `nix.conf`.
+
+## CI
+
+[build.yml](.github/workflows/build.yml) builds the package on pushes to
+`main` and on pull requests and uploads the exe and DLLs as an artifact.
+[release.yml](.github/workflows/release.yml) does the same for a tag and
+attaches `freerdp-<tag>.zip` to a release, which is what weaselway's
+`install-freerdp.sh` downloads. Both use weaselway.cachix.org and push what
+they build to it (token in the `CACHIX_AUTH_TOKEN` secret), so the toolchain
+is not compiled on every run and the weaselway image build finds the client
+there. Pull requests from forks get no secrets and only read the cache.
