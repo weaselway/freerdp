@@ -51,7 +51,8 @@ set(SRCS
 
 if(WIN32)
   list(APPEND SRCS sdl_win32_touchpad.hpp sdl_win32_touchpad.cpp)
-  list(APPEND LIBS hid)
+  list(APPEND SRCS sdl_d3d11_presenter.hpp sdl_d3d11_presenter.cpp)
+  list(APPEND LIBS hid d3d11 dxgi)
 endif()
 
 add_win_console_manifest(SRCS)

@@ -166,8 +166,15 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 
 	try
 	{
+		bool stopping = false;
 		while (!sdl->shallAbort())
 		{
+			if (!stopping && sdl->stopTimeReached())
+			{
+				stopping = true;
+				std::ignore = sdl_push_quit();
+			}
+
 			SDL_Event windowEvent = {};
 			while (!sdl->shallAbort() && SDL_WaitEventTimeout(nullptr, 1000))
 			{
@@ -186,6 +193,12 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 				           sdl::utils::toString(windowEvent.type).c_str(), windowEvent.type);
 				if (sdl->shallAbort(true))
 					continue;
+
+				if (!stopping && sdl->stopTimeReached())
+				{
+					stopping = true;
+					std::ignore = sdl_push_quit();
+				}
 
 				if (sdl->getDialog().handleEvent(windowEvent))
 					continue;
@@ -240,6 +253,10 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 						 * producers always queue at least one rect, so an empty
 						 * list means there is nothing to draw -- it must not
 						 * become a full-screen refresh. */
+						/* A leftover from before the render thread took over. */
+						if (sdl->usesRenderThread())
+							break;
+
 						const auto rectangles = sdl->popAll();
 						if (rectangles.empty())
 							break;
