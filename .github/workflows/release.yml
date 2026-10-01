@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags: ['*']
+
+# Needed to create the release and upload the asset to it.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/build-client
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Create the release and attach the client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The name and the flat layout are what weaselway's
+          # install-freerdp.sh downloads and unpacks.
+          asset="freerdp-${GITHUB_REF_NAME}.zip"
+          (cd result/bin && zip -9 "${GITHUB_WORKSPACE}/${asset}" sdl-freerdp.exe ./*.dll)
+          # If a release already exists for this tag, `gh release create`
+          # fails and the workflow fails with it rather than replacing a
+          # published artifact.
+          gh release create "${GITHUB_REF_NAME}" "${asset}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
