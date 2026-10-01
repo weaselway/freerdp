@@ -257,10 +257,10 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 						if (sdl->usesRenderThread())
 							break;
 
+						/* Even when it is empty: RAIL damage is not in this
+						 * queue, and drawToWindows() skips an empty desktop
+						 * update itself. */
 						const auto rectangles = sdl->popAll();
-						if (rectangles.empty())
-							break;
-
 						if (!sdl->drawToWindows(rectangles))
 							throw ErrorMsg{ -1, windowEvent.type, "sdl->drawToWindows" };
 

@@ -108,6 +108,7 @@ class SdlContext
 	 * SDL thread only asks for redraws. The thread must not run while
 	 * _windows changes; RenderPause stops it for a scope. */
 	[[nodiscard]] bool usesRenderThread() const;
+	[[nodiscard]] bool desktopPresenter() const;
 	void requestRedraw();
 	void startRenderThread();
 	void stopRenderThread();

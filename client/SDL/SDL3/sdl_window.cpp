@@ -42,7 +42,7 @@ class SdlD3D11Presenter
 #include <freerdp/utils/string.h>
 
 SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect,
-                     [[maybe_unused]] Uint32 flags)
+                     [[maybe_unused]] Uint32 flags, [[maybe_unused]] bool presenter)
     : _initialW(rect.w), _initialH(rect.h), _displayID(id)
 {
 	float pd = SDL_GetDisplayContentScale(id);
@@ -81,7 +81,7 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	std::ignore = SDL_SyncWindow(_window);
 
 #if defined(_WIN32)
-	if (presenterEnabled() && !showDamage())
+	if (presenter && presenterEnabled() && !showDamage())
 	{
 		auto hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(_window),
 		                                   SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
@@ -1243,7 +1243,7 @@ bool SdlWindow::paintResizeFrame(SDL_Surface* surface, SDL_Point off, bool conte
 }
 
 SdlWindow SdlWindow::create(SDL_DisplayID id, const std::string& title, Uint32 flags, Uint32 width,
-                            Uint32 height)
+                            Uint32 height, bool presenter)
 {
 	flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
@@ -1256,7 +1256,7 @@ SdlWindow SdlWindow::create(SDL_DisplayID id, const std::string& title, Uint32 f
 		std::ignore = SDL_GetDisplayBounds(id, &rect);
 	}
 
-	SdlWindow window{ id, title, rect, flags };
+	SdlWindow window{ id, title, rect, flags, presenter };
 
 	if ((flags & SDL_WINDOW_FULLSCREEN) != 0)
 	{

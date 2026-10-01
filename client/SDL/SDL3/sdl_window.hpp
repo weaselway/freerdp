@@ -32,8 +32,11 @@ class SdlD3D11Presenter;
 class SdlWindow
 {
   public:
+	/* presenter: draw with the Direct3D 11 presenter if it is enabled, see
+	 * setPresenter(). Only for desktop windows; RAIL windows need a renderer. */
 	[[nodiscard]] static SdlWindow create(SDL_DisplayID id, const std::string& title, Uint32 flags,
-	                                      Uint32 width = 0, Uint32 height = 0);
+	                                      Uint32 width = 0, Uint32 height = 0,
+	                                      bool presenter = false);
 	/* Create at an explicit position+size (RAIL windows: server-driven geometry). */
 	[[nodiscard]] static SdlWindow create(SDL_DisplayID id, const std::string& title, Uint32 flags,
 	                                      const SDL_Rect& rect);
@@ -163,7 +166,8 @@ class SdlWindow
 	static void countFrameIn();
 
   protected:
-	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags);
+	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags,
+	          bool presenter = false);
 	SdlWindow(SDL_Window* parent, const SDL_Rect& rect, bool transparent, bool tooltip);
 
 	[[nodiscard]] static bool fill(SDL_Window* window, Uint8 r = 0x00, Uint8 g = 0x00,

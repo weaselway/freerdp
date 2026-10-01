@@ -457,7 +457,7 @@ bool SdlContext::createWindows()
 			flags |= SDL_WINDOW_BORDERLESS;
 
 		auto did = WINPR_ASSERTING_INT_CAST(SDL_DisplayID, id);
-		auto window = SdlWindow::create(did, title, flags, w, h);
+		auto window = SdlWindow::create(did, title, flags, w, h, desktopPresenter());
 
 		if (freerdp_settings_get_bool(settings, FreeRDP_UseMultimon))
 		{
@@ -1062,7 +1062,7 @@ bool SdlContext::addDisplayWindow(SDL_DisplayID id)
 	const auto flags =
 	    SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS;
 	auto title = sdl::utils::windowTitle(context()->settings);
-	auto w = SdlWindow::create(id, title, flags);
+	auto w = SdlWindow::create(id, title, flags, 0, 0, desktopPresenter());
 	RenderPause pause(this);
 	_windows.emplace(w.id(), std::move(w));
 	return true;
@@ -1763,6 +1763,14 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		}
 	}
 	return 0;
+}
+
+/* RAIL draws the desktop surface into its own windows on the SDL thread and
+ * hides the desktop windows, so there the SDL renderer stays. */
+bool SdlContext::desktopPresenter() const
+{
+	return SdlWindow::presenterEnabled() &&
+	       !freerdp_settings_get_bool(context()->settings, FreeRDP_RemoteApplicationMode);
 }
 
 bool SdlContext::usesRenderThread() const
