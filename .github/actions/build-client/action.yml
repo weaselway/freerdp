@@ -1,0 +1,36 @@
+name: Build the Windows client
+description: >
+  Builds the flake's sdl-freerdp package (see WEASELWAY.md), leaving
+  sdl-freerdp.exe, SDL3.dll and SDL3_ttf.dll in result/bin.
+
+inputs:
+  cachix-auth-token:
+    description: >
+      Token for pushing to the weaselway Cachix cache. Without one (pull
+      requests from forks get no secrets) the cache is only read from.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@v31.11.1
+      with:
+        extra_nix_config: |
+          max-jobs = auto
+
+    # The same cache the weaselway image build uses. cache.nixos.org has no
+    # mingw/UCRT cross gcc, so without it every run would compile the
+    # toolchain first. Every path this job builds is pushed, which also puts
+    # the client where the image build and nixos-rebuild on a WSL machine
+    # find it.
+    - uses: cachix/cachix-action@v17
+      with:
+        name: weaselway
+        authToken: ${{ inputs.cachix-auth-token }}
+
+    - name: Build sdl-freerdp.exe
+      shell: bash
+      run: |
+        nix build --print-build-logs .#sdl-freerdp
+        ls -l result/bin

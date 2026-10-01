@@ -18,15 +18,15 @@ SDL3_SHA256=daad6044f75689ea5edb34eed0cc6dccac85246a3f469714d46da3a178ea7edc
 SDL3_TTF_SHA256=bb57f26787d6a2e108158562feb061fcdf6f68a110f9c8cf9af42ff343d4e41c
 
 # MSYS2's prebuilt mingw OpenSSL, used in place of whatever the host toolchain
-# happens to ship for the target (the Arch cross toolchain has none at all).
+# happens to ship for the target (nixpkgs' cross toolchain has none at all).
 # The package carries static archives next to the import libraries, which is
 # what OPENSSL_USE_STATIC_LIBS below needs. Note the version is the full MSYS2
 # package version, upstream release plus pkgrel.
 #
 # It has to be the ucrt64 package rather than the mingw64 one. MSYS2 builds
 # those two environments against different C runtimes -- ucrtbase.dll and the
-# old msvcrt.dll -- and mingw-w64 has defaulted to UCRT for a while now, which
-# is what the toolchain in the Dockerfile does. Feeding the msvcrt build to a
+# old msvcrt.dll -- and the toolchain in flake.nix (pkgsCross.ucrt64) targets
+# UCRT. Feeding the msvcrt build to a
 # UCRT link fails on symbols only the old runtime exported, e.g.
 # "undefined reference to `__imp__vsnprintf'" out of libcrypto.a.
 OPENSSL_VERSION=3.6.3-1
@@ -110,7 +110,7 @@ source mingw-env x86_64-w64-mingw32
 
 # See the note at the top: confine find_* to the target sysroot on layouts that
 # have one, and leave it alone where there is none. MINGW_SYSROOT overrides the
-# guess -- docker-env.sh already forwards it.
+# guess.
 CROSS_FIND_ARGS=()
 MINGW_SYSROOT=${MINGW_SYSROOT:-/usr/x86_64-w64-mingw32}
 if [ -d "$MINGW_SYSROOT" ]; then

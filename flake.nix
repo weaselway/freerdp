@@ -113,7 +113,7 @@
         let
           # Everything in here is built *for* Windows, *on* the build system.
           # UCRT rather than msvcrt: build-freerdp.sh links MSYS2's ucrt64
-          # OpenSSL, and the Arch toolchain in the Dockerfile defaults to UCRT.
+          # OpenSSL.
           pkgsCross = pkgs.pkgsCross.ucrt64;
           prefix = pkgsCross.stdenv.cc.targetPrefix;
 

@@ -1,0 +1,37 @@
+# Builds the Windows client from flake.nix, see WEASELWAY.md.
+name: Build
+
+# Pushes to main and pull requests; other branches can be built with
+# workflow_dispatch. Tags are release.yml's.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    # Minutes with a warm cache; a nixpkgs bump compiles the cross gcc again.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/build-client
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: freerdp-build
+          path: |
+            result/bin/sdl-freerdp.exe
+            result/bin/*.dll
+          if-no-files-found: error
