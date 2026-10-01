@@ -18,6 +18,10 @@
  * limitations under the License.
  */
 #include <SDL3/SDL_render.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdio>
 #include <limits>
 #include <sstream>
 #include <cmath>
@@ -25,6 +29,15 @@
 
 #include "sdl_window.hpp"
 #include "sdl_utils.hpp"
+
+#if defined(_WIN32)
+#include "sdl_d3d11_presenter.hpp"
+#else
+/* Never created, but the window holds a pointer to one. */
+class SdlD3D11Presenter
+{
+};
+#endif
 
 #include <freerdp/utils/string.h>
 
@@ -67,14 +80,30 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	SDL_SetHint(SDL_HINT_APP_NAME, "");
 	std::ignore = SDL_SyncWindow(_window);
 
-	_renderer = SDL_CreateRenderer(_window, nullptr);
+#if defined(_WIN32)
+	if (presenterEnabled() && !showDamage())
+	{
+		auto hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(_window),
+		                                   SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+		_presenter = SdlD3D11Presenter::create(hwnd, vsync());
+		if (!_presenter)
+		{
+			SDL_LogWarn(SDL_LOG_CATEGORY_RENDER,
+			            "Direct3D 11 presenter unavailable, using the SDL renderer");
+			setPresenter(false);
+		}
+	}
+#endif
+
+	if (!_presenter)
+		_renderer = SDL_CreateRenderer(_window, nullptr);
 
 	/* SDL3 creates renderers with vsync disabled, so presents tear. Enabling it
 	 * makes SDL_RenderPresent block until the next refresh, which throttles the
 	 * update path in updateSurface() to the display rate. */
 	if (_renderer)
 	{
-		if (!SDL_SetRenderVSync(_renderer, 1))
+		if (!SDL_SetRenderVSync(_renderer, vsync() ? 1 : SDL_RENDERER_VSYNC_DISABLED))
 			SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_SetRenderVSync: %s", SDL_GetError());
 	}
 
@@ -84,7 +113,9 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 }
 
 SdlWindow::SdlWindow(SdlWindow&& other) noexcept
-    : _window(other._window), _renderer(other._renderer), _renderTarget(other._renderTarget),
+    : _presenter(std::move(other._presenter)), _presentPending(other._presentPending),
+      _presentSlot(other._presentSlot), _presentPendingSince(other._presentPendingSince),
+      _window(other._window), _renderer(other._renderer), _renderTarget(other._renderTarget),
       _gdiTexture(other._gdiTexture), _gdiTextureW(other._gdiTextureW),
       _gdiTextureH(other._gdiTextureH), _initialW(other._initialW), _initialH(other._initialH),
       _displayID(other._displayID), _offset_x(other._offset_x), _offset_y(other._offset_y),
@@ -98,6 +129,8 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
 
 SdlWindow::~SdlWindow()
 {
+	/* Before the window it draws to. */
+	_presenter.reset();
 	if (_gdiTexture)
 		SDL_DestroyTexture(_gdiTexture);
 	if (_renderTarget)
@@ -339,9 +372,42 @@ bool SdlWindow::drawRect(SDL_Surface* surface, SDL_Point offset, const SDL_Rect&
 	return blit(surface, srcRect, dstRect);
 }
 
+bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SDL_FPoint& scale,
+                                const std::vector<SDL_Rect>& rects)
+{
+#if defined(_WIN32)
+	WINPR_ASSERT(surface);
+	_presenter->setMapping(offset, scale);
+
+	const auto start = SDL_GetTicksNS();
+	Uint64 bytes = 0;
+	if (!_presenter->upload(surface, rects, &bytes))
+		return false;
+	const auto now = SDL_GetTicksNS();
+	addStat(STAT_UPLOAD, now - start);
+
+	if (showStats())
+	{
+		_statsBlits += rects.empty() ? 1 : rects.size();
+		_statsBytes += bytes;
+	}
+	_gdiTextureW = surface->w;
+	_gdiTextureH = surface->h;
+
+	if (!_presentPending)
+		_presentPendingSince = now;
+	_presentPending = true;
+	return true;
+#else
+	return false;
+#endif
+}
+
 bool SdlWindow::drawRects(SDL_Surface* surface, SDL_Point offset,
                           const std::vector<SDL_Rect>& rects)
 {
+	if (_presenter)
+		return presenterUpload(surface, offset, { 1.0f, 1.0f }, rects);
 	if (rects.empty())
 	{
 		return drawRect(surface, offset, { 0, 0, surface->w, surface->h });
@@ -374,6 +440,8 @@ bool SdlWindow::drawScaledRect(SDL_Surface* surface, const SDL_FPoint& scale,
 bool SdlWindow::drawScaledRects(SDL_Surface* surface, const SDL_FPoint& scale,
                                 const std::vector<SDL_Rect>& rects)
 {
+	if (_presenter)
+		return presenterUpload(surface, { 0, 0 }, scale, rects);
 	if (rects.empty())
 	{
 		return drawScaledRect(surface, scale, { 0, 0, surface->w, surface->h });
@@ -388,6 +456,10 @@ bool SdlWindow::drawScaledRects(SDL_Surface* surface, const SDL_FPoint& scale,
 
 bool SdlWindow::fill(Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
+	/* The presenter clears around the desktop on every present, and a window
+	 * surface would fight with its swap chain. */
+	if (_presenter)
+		return true;
 	if (_renderer)
 	{
 		ensureRenderTarget();
@@ -583,11 +655,14 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 	const int bpp = details ? details->bytes_per_pixel : 4;
 	const auto* pixels = static_cast<const uint8_t*>(surface->pixels) +
 	                     (1ll * srcRect.y * surface->pitch) + (1ll * srcRect.x * bpp);
+	const auto uploadStart = SDL_GetTicksNS();
 	if (!SDL_UpdateTexture(_gdiTexture, &srcRect, pixels, surface->pitch))
 	{
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_UpdateTexture: %s", SDL_GetError());
 		return false;
 	}
+	const auto renderStart = SDL_GetTicksNS();
+	addStat(STAT_UPLOAD, renderStart - uploadStart);
 
 	if (showStats())
 	{
@@ -612,6 +687,14 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 		return false;
 	}
 
+	if (showStats())
+	{
+		/* SDL batches draw calls; without the flush the copy would be billed
+		 * to whatever flushes next. */
+		(void)SDL_FlushRenderer(_renderer);
+		addStat(STAT_RENDER, SDL_GetTicksNS() - renderStart);
+	}
+
 	if (showDamage())
 		_damageRects.push_back(dstRect);
 
@@ -623,6 +706,165 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 static bool s_showDamage = false;
 static bool s_showStats = false;
 static float s_statsScale = 2.0f;
+static const float s_statsLineHeight = static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 2.0f;
+static bool s_vsync = true;
+#if defined(_WIN32)
+static bool s_presenter = true;
+#else
+static bool s_presenter = false;
+#endif
+static FILE* s_statsLog = nullptr; /* never closed, lives as long as the process */
+
+/* Stage timings. s_frame collects the frame being drawn and is folded into
+ * s_stages when it is presented. SDL thread only, apart from s_framesIn. */
+struct StageStat
+{
+	Uint64 sum = 0;
+	Uint64 max = 0;
+	Uint64 count = 0;
+};
+static std::array<StageStat, SdlWindow::STAT_COUNT> s_stages;
+static std::array<Uint64, SdlWindow::STAT_COUNT> s_frame;
+static std::array<bool, SdlWindow::STAT_COUNT> s_frameHas;
+static Uint64 s_frameQueuedAt = 0;
+static std::atomic<Uint64> s_framesIn{ 0 };
+
+void SdlWindow::setVSync(bool enable)
+{
+	s_vsync = enable;
+}
+
+bool SdlWindow::vsync()
+{
+	return s_vsync;
+}
+
+void SdlWindow::setPresenter(bool enable)
+{
+#if defined(_WIN32)
+	s_presenter = enable;
+#else
+	(void)enable;
+#endif
+}
+
+bool SdlWindow::presenterEnabled()
+{
+	return s_presenter;
+}
+
+bool SdlWindow::hasPresenter() const
+{
+	return _presenter != nullptr;
+}
+
+void* SdlWindow::presentHandle() const
+{
+#if defined(_WIN32)
+	if (_presenter)
+		return _presenter->waitHandle();
+#endif
+	return nullptr;
+}
+
+bool SdlWindow::presentPending() const
+{
+	return _presentPending;
+}
+
+bool SdlWindow::hasPresentSlot() const
+{
+	return _presentSlot;
+}
+
+void SdlWindow::presentSlot()
+{
+	_presentSlot = true;
+}
+
+void SdlWindow::presenterPresent()
+{
+#if defined(_WIN32)
+	const auto drawStart = SDL_GetTicksNS();
+	addStat(STAT_SWAPWAIT, drawStart - _presentPendingSince);
+
+	_presentPending = false;
+	_presentSlot = false;
+	if (!_presenter->draw())
+		return;
+	const auto presentStart = SDL_GetTicksNS();
+	addStat(STAT_COMPOSITE, presentStart - drawStart);
+
+	if (!_presenter->present())
+		return;
+
+	if (showStats())
+	{
+		const auto now = SDL_GetTicksNS();
+		addStat(STAT_PRESENT, now - presentStart);
+		if (s_frameQueuedAt != 0)
+			addStat(STAT_TOTAL, now - s_frameQueuedAt);
+		commitFrameStats();
+		_statsFrames++;
+		/* Shows from the next present on. */
+		if (updateStats())
+			updatePresenterOverlay();
+	}
+#endif
+}
+
+bool SdlWindow::takeRedrawRequest()
+{
+#if defined(_WIN32)
+	if (_presenter)
+		return _presenter->takeRedrawRequest();
+#endif
+	return false;
+}
+
+bool SdlWindow::setStatsLog(const char* path)
+{
+	s_statsLog = fopen(path, "a");
+	if (!s_statsLog)
+		return false;
+	s_showStats = true;
+	return true;
+}
+
+void SdlWindow::addStat(StatStage stage, Uint64 ns)
+{
+	if (!s_showStats)
+		return;
+	s_frame[stage] += ns;
+	s_frameHas[stage] = true;
+}
+
+void SdlWindow::setFrameQueuedAt(Uint64 ns)
+{
+	s_frameQueuedAt = ns;
+}
+
+void SdlWindow::countFrameIn()
+{
+	if (s_showStats)
+		s_framesIn++;
+}
+
+void SdlWindow::commitFrameStats()
+{
+	for (size_t x = 0; x < s_stages.size(); x++)
+	{
+		if (!s_frameHas[x])
+			continue;
+		auto& stage = s_stages[x];
+		stage.sum += s_frame[x];
+		stage.max = std::max(stage.max, s_frame[x]);
+		stage.count++;
+	}
+	s_frame.fill(0);
+	s_frameHas.fill(false);
+	s_frameQueuedAt = 0;
+}
 
 void SdlWindow::setShowDamage(bool enable)
 {
@@ -653,9 +895,70 @@ float SdlWindow::statsScale()
 
 void SdlWindow::renderStats()
 {
+	(void)updateStats();
+	if (_statsText.empty())
+		return;
+
+	const auto scale = statsScale();
+	float sx = 1.0f;
+	float sy = 1.0f;
+	(void)SDL_GetRenderScale(_renderer, &sx, &sy);
+	if (!SDL_SetRenderScale(_renderer, scale, scale))
+		return;
+	renderStatsText(_renderer);
+	(void)SDL_SetRenderScale(_renderer, sx, sy);
+}
+
+SDL_FRect SdlWindow::statsBox() const
+{
+	size_t longest = 0;
+	for (const auto& text : _statsText)
+		longest = std::max(longest, text.size());
+	const auto chars = static_cast<float>(longest);
+	return { 2.0f, 2.0f, chars * static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 8.0f,
+		     static_cast<float>(_statsText.size()) * s_statsLineHeight + 6.0f };
+}
+
+void SdlWindow::updatePresenterOverlay()
+{
+#if defined(_WIN32)
+	if (_statsText.empty())
+		return;
+
+	/* The presenter has no text drawing of its own, so the overlay is drawn
+	 * into a surface with SDL's software renderer and handed over as a
+	 * texture. Only when the numbers change, i.e. twice a second. */
+	const auto scale = statsScale();
+	const auto box = statsBox();
+	const auto w = static_cast<int>(std::ceil((box.x + box.w) * scale));
+	const auto h = static_cast<int>(std::ceil((box.y + box.h) * scale));
+
+	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> surface(
+	    SDL_CreateSurface(w, h, SDL_PIXELFORMAT_BGRA32), SDL_DestroySurface);
+	if (!surface)
+		return;
+	std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer(
+	    SDL_CreateSoftwareRenderer(surface.get()), SDL_DestroyRenderer);
+	if (!renderer)
+		return;
+
+	if (!SDL_SetRenderDrawColor(renderer.get(), 0x00, 0x00, 0x00, 0x00) ||
+	    !SDL_RenderClear(renderer.get()) || !SDL_SetRenderScale(renderer.get(), scale, scale))
+		return;
+	renderStatsText(renderer.get());
+	if (!SDL_RenderPresent(renderer.get()))
+		return;
+
+	(void)_presenter->setOverlay(surface.get());
+#endif
+}
+
+bool SdlWindow::updateStats()
+{
 	const auto now = SDL_GetTicksNS();
 	if (_statsWindowStart == 0)
 		_statsWindowStart = now;
+	bool changed = false;
 
 	/* Recompute at most twice a second: at frame rate the numbers flicker too
 	 * fast to read, and the averaging is what makes them meaningful. */
@@ -667,46 +970,84 @@ void SdlWindow::renderStats()
 		const auto mbps = static_cast<double>(_statsBytes) / secs / (1024.0 * 1024.0);
 		const auto bpf = (_statsFrames > 0) ? (_statsBlits / _statsFrames) : _statsBlits;
 
-		char buffer[128] = { 0 };
+		const auto in = static_cast<double>(s_framesIn.exchange(0)) / secs;
+		int vsync = 0;
+		if (_renderer)
+			(void)SDL_GetRenderVSync(_renderer, &vsync);
+		const char* name = _presenter ? "presenter" : SDL_GetRendererName(_renderer);
+		if (_presenter)
+			vsync = s_vsync ? 1 : 0;
+
+		char buffer[160] = { 0 };
+		_statsText.clear();
 		(void)SDL_snprintf(buffer, sizeof(buffer),
-		                   "%5.1f fps  %7.2f MiB/s  %llu blits/frame  %dx%d", fps, mbps,
-		                   static_cast<unsigned long long>(bpf), _gdiTextureW, _gdiTextureH);
-		_statsText = buffer;
+		                   "%5.1f fps (%5.1f in)  %7.2f MiB/s  %llu blits/frame  %dx%d  %s%s",
+		                   fps, in, mbps, static_cast<unsigned long long>(bpf), _gdiTextureW,
+		                   _gdiTextureH, name ? name : "?", (vsync != 0) ? " vsync" : "");
+		_statsText.emplace_back(buffer);
+
+		/* avg/max in ms per stage, two lines so it fits a 1280 wide window. */
+		static const std::array<const char*, STAT_COUNT> names = {
+			"wait", "lock", "upload", "render", "ack", "swapwait", "composite", "present", "total"
+		};
+		std::string line = "ms avg/max";
+		for (size_t x = 0; x < s_stages.size(); x++)
+		{
+			const auto& stage = s_stages[x];
+			const auto avg = (stage.count > 0) ? static_cast<double>(stage.sum) /
+			                                         static_cast<double>(stage.count) / 1e6
+			                                   : 0.0;
+			(void)SDL_snprintf(buffer, sizeof(buffer), "  %s %.2f/%.2f", names[x], avg,
+			                   static_cast<double>(stage.max) / 1e6);
+			line += buffer;
+			if (x == STAT_RENDER)
+			{
+				_statsText.push_back(line);
+				line = "          ";
+			}
+		}
+		_statsText.push_back(line);
+		s_stages.fill({});
+
+		/* The overlay can't be copied out of, so the same numbers go to stderr
+		 * or the stats log. */
+		auto out = s_statsLog ? s_statsLog : stderr;
+		for (const auto& text : _statsText)
+			(void)fprintf(out, "[stats] %s\n", text.c_str());
+		(void)fflush(out);
 
 		_statsWindowStart = now;
 		_statsFrames = 0;
 		_statsBlits = 0;
 		_statsBytes = 0;
+		changed = true;
+	}
+	return changed;
+}
+
+void SdlWindow::renderStatsText(SDL_Renderer* renderer)
+{
+	/* Backing box, so the text stays legible over arbitrary desktop content.
+	 * The caller has set the text scale; coordinates are in scaled units. */
+	const auto box = statsBox();
+	SDL_BlendMode blend = SDL_BLENDMODE_NONE;
+	(void)SDL_GetRenderDrawBlendMode(renderer, &blend);
+
+	if (SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND) &&
+	    SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xc0))
+		(void)SDL_RenderFillRect(renderer, &box);
+
+	if (SDL_SetRenderDrawColor(renderer, 0x00, 0xff, 0x00, 0xff))
+	{
+		auto y = box.y + 4.0f;
+		for (const auto& text : _statsText)
+		{
+			(void)SDL_RenderDebugText(renderer, box.x + 4.0f, y, text.c_str());
+			y += s_statsLineHeight;
+		}
 	}
 
-	if (_statsText.empty())
-		return;
-
-	const auto scale = statsScale();
-	float sx = 1.0f;
-	float sy = 1.0f;
-	(void)SDL_GetRenderScale(_renderer, &sx, &sy);
-	if (!SDL_SetRenderScale(_renderer, scale, scale))
-		return;
-
-	/* Backing box, so the text stays legible over arbitrary desktop content.
-	 * Coordinates are in scaled units from here on. */
-	const auto chars = static_cast<float>(_statsText.size());
-	const SDL_FRect box{ 2.0f, 2.0f,
-		                 chars * static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 8.0f,
-		                 static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 8.0f };
-	SDL_BlendMode blend = SDL_BLENDMODE_NONE;
-	(void)SDL_GetRenderDrawBlendMode(_renderer, &blend);
-
-	if (SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND) &&
-	    SDL_SetRenderDrawColor(_renderer, 0x00, 0x00, 0x00, 0xc0))
-		(void)SDL_RenderFillRect(_renderer, &box);
-
-	if (SDL_SetRenderDrawColor(_renderer, 0x00, 0xff, 0x00, 0xff))
-		(void)SDL_RenderDebugText(_renderer, box.x + 4.0f, box.y + 4.0f, _statsText.c_str());
-
-	(void)SDL_SetRenderDrawBlendMode(_renderer, blend);
-	(void)SDL_SetRenderScale(_renderer, sx, sy);
+	(void)SDL_SetRenderDrawBlendMode(renderer, blend);
 }
 
 void SdlWindow::updateSurface()
@@ -716,6 +1057,12 @@ void SdlWindow::updateSurface()
 	 * frame, which is exactly what this is meant to show is not happening. */
 	const auto damage = std::move(_damageRects);
 	_damageRects.clear();
+
+	if (_presenter)
+	{
+		presenterPresent();
+		return;
+	}
 
 	if (!_renderer)
 		return;
@@ -733,6 +1080,8 @@ void SdlWindow::updateSurface()
 			return;
 		}
 	}
+
+	const auto compositeStart = SDL_GetTicksNS();
 
 	/* Copy accumulated render target to screen and present. Each step is
 	 * logged on failure: these used to return silently, which looks exactly
@@ -784,11 +1133,28 @@ void SdlWindow::updateSurface()
 		renderStats();
 	}
 
+	Uint64 presentStart = 0;
+	if (showStats())
+	{
+		(void)SDL_FlushRenderer(_renderer);
+		presentStart = SDL_GetTicksNS();
+		addStat(STAT_COMPOSITE, presentStart - compositeStart);
+	}
+
 	if (!SDL_RenderPresent(_renderer))
 	{
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "updateSurface: SDL_RenderPresent: %s",
 		             SDL_GetError());
 		return;
+	}
+
+	if (showStats())
+	{
+		const auto now = SDL_GetTicksNS();
+		addStat(STAT_PRESENT, now - presentStart);
+		if (s_frameQueuedAt != 0)
+			addStat(STAT_TOTAL, now - s_frameQueuedAt);
+		commitFrameStats();
 	}
 }
 

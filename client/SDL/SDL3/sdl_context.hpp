@@ -102,6 +102,38 @@ class SdlContext
 	[[nodiscard]] bool pushUpdate(std::vector<SDL_Rect>&& rects);
 	[[nodiscard]] std::vector<SDL_Rect> popAll();
 
+	/* /sdl-presenter: with windows drawn by SdlD3D11Presenter, uploads and
+	 * presents happen on a thread of their own, so a present waiting for the
+	 * display neither holds up input nor the upload of the next frame. The
+	 * SDL thread only asks for redraws. The thread must not run while
+	 * _windows changes; RenderPause stops it for a scope. */
+	[[nodiscard]] bool usesRenderThread() const;
+	void requestRedraw();
+	void startRenderThread();
+	void stopRenderThread();
+	class RenderPause
+	{
+	  public:
+		explicit RenderPause(SdlContext* sdl, bool restart = true) : _sdl(sdl), _restart(restart)
+		{
+			_sdl->stopRenderThread();
+		}
+		~RenderPause()
+		{
+			if (_restart)
+				_sdl->startRenderThread();
+		}
+		RenderPause(const RenderPause& other) = delete;
+		RenderPause& operator=(const RenderPause& other) = delete;
+
+	  private:
+		SdlContext* _sdl;
+		bool _restart;
+	};
+
+	/* /stop-after-seconds: true once the process has run that long. */
+	[[nodiscard]] bool stopTimeReached() const;
+
 	void setHasCursor(bool val);
 	[[nodiscard]] bool hasCursor() const;
 
@@ -245,6 +277,14 @@ class SdlContext
 	std::mutex _queue_mux;
 	std::queue<std::vector<SDL_Rect>> _queue;
 	bool _updatePending = false; /* guarded by _queue_mux */
+	Uint64 _stopAfterNS = 0;     /* SDL_GetTicksNS() deadline, 0 = none */
+
+	void renderThreadMain();
+	std::thread _renderThread;
+	void* _renderWake = nullptr; /* Win32 event: work queued, or stop */
+	std::atomic<bool> _renderActive{ false }; /* read by the channel threads */
+	std::atomic<bool> _renderStop{ false };
+	std::atomic<bool> _renderRedraw{ false };
 	/* SDL */
 	bool _fullscreen = false;
 	bool _resizeable = false;
@@ -281,6 +321,7 @@ class SdlContext
 		UINT64 windowId = 0;
 		UINT64 presentId = 0;
 		UINT64 queuedAt = 0;
+		Uint64 queuedAtNS = 0; /* SDL_GetTicksNS(), for the stats overlay */
 	};
 
 	std::map<UINT64, GfxRedirBuffer> _gfxRedirBuffers;

@@ -40,6 +40,11 @@
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
 static constexpr auto sdl_show_damage = "sdl-show-damage";
 static constexpr auto sdl_show_stats = "sdl-show-stats";
+static constexpr auto sdl_no_vsync = "sdl-no-vsync";
+static constexpr auto sdl_render_driver = "sdl-render-driver";
+static constexpr auto stop_after_seconds = "stop-after-seconds";
+static constexpr auto sdl_presenter = "sdl-presenter";
+static constexpr auto sdl_stats_log = "sdl-stats-log";
 static constexpr auto sdl_touchpad_gestures = "sdl-touchpad-gestures";
 
 SdlContext::SdlContext(rdpContext* context)
@@ -73,7 +78,20 @@ SdlContext::SdlContext(rdpContext* context)
 	_args.push_back({ sdl_show_damage, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr,
 	                  -1, nullptr, "Tint the regions updated in each frame" });
 	_args.push_back({ sdl_show_stats, COMMAND_LINE_VALUE_OPTIONAL, "<text scale>", nullptr, nullptr,
-	                  -1, nullptr, "Draw a frame/bandwidth counter overlay" });
+	                  -1, nullptr, "Draw a frame/bandwidth/stage timing overlay" });
+	_args.push_back({ sdl_no_vsync, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr, -1,
+	                  nullptr, "Present without waiting for vsync (tears, for latency tests)" });
+	_args.push_back({ sdl_stats_log, COMMAND_LINE_VALUE_REQUIRED, "<file>", nullptr, nullptr, -1,
+	                  nullptr, "Append the stats overlay's numbers to a file" });
+	_args.push_back({ sdl_render_driver, COMMAND_LINE_VALUE_REQUIRED, "<name>", nullptr, nullptr,
+	                  -1, nullptr,
+	                  "SDL render driver, e.g. direct3d11, direct3d12, vulkan, opengl, gpu" });
+	_args.push_back({ stop_after_seconds, COMMAND_LINE_VALUE_REQUIRED, "<seconds>", nullptr,
+	                  nullptr, -1, nullptr, "Disconnect and exit after this many seconds" });
+	_args.push_back({ sdl_presenter, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr, -1,
+	                  nullptr,
+	                  "Draw with a Direct3D 11 presenter on its own thread (Windows), "
+	                  "-sdl-presenter for the SDL renderer" });
 	_args.push_back({ sdl_touchpad_gestures, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
 	                  nullptr, -1, nullptr,
 	                  "Forward 3+ finger touchpad gestures as touch input (Windows)" });
@@ -127,6 +145,7 @@ int SdlContext::join()
 
 void SdlContext::cleanup()
 {
+	stopRenderThread();
 	std::unique_lock lock(_critical);
 	_windows.clear();
 	_dialog.destroy();
@@ -377,6 +396,7 @@ bool SdlContext::createWindows()
 	const auto& title = windowTitle();
 
 	ScopeGuard guard1([&]() { _windowsCreatedEvent.set(); });
+	RenderPause pause(this);
 
 	UINT32 windowCount = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
 
@@ -942,7 +962,10 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 
 	auto size = window.rect();
 
+	const auto lockStart = SDL_GetTicksNS();
 	std::unique_lock lock(_critical);
+	const auto lockDone = SDL_GetTicksNS();
+	SdlWindow::addStat(SdlWindow::STAT_LOCK, lockDone - lockStart);
 
 	/* While gfxredir drives the output the pixels live in the server's shared
 	 * memory, so upload from there instead of the gdi primary buffer. */
@@ -957,7 +980,17 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 		const UINT64 presentId =
 		    _gfxRedirPending.empty() ? 0 : _gfxRedirPending.back().presentId;
 		if (presentId != 0)
+		{
+			/* Only the first time a present is drawn: expose redraws upload
+			 * from it again and would count its age as latency. */
+			if (presentId != _gfxRedirDrawnPresentId)
+			{
+				const auto queuedAt = _gfxRedirPending.back().queuedAtNS;
+				SdlWindow::setFrameQueuedAt(queuedAt);
+				SdlWindow::addStat(SdlWindow::STAT_WAIT, lockStart - queuedAt);
+			}
 			_gfxRedirDrawnPresentId = presentId;
+		}
 
 		if (rects.empty())
 		{
@@ -1030,12 +1063,14 @@ bool SdlContext::addDisplayWindow(SDL_DisplayID id)
 	    SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS;
 	auto title = sdl::utils::windowTitle(context()->settings);
 	auto w = SdlWindow::create(id, title, flags);
+	RenderPause pause(this);
 	_windows.emplace(w.id(), std::move(w));
 	return true;
 }
 
 bool SdlContext::removeDisplayWindow(SDL_DisplayID id)
 {
+	RenderPause pause(this);
 	for (auto& w : _windows)
 	{
 		if (w.second.displayIndex() == id)
@@ -1278,7 +1313,9 @@ bool SdlContext::handleEvent(const SDL_WindowEvent& ev)
 		case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
 			if (!resizeToScale(window))
 				return false;
-			if (isConnected())
+			if (isConnected() && usesRenderThread())
+				requestRedraw();
+			else if (isConnected())
 			{
 				if (!window->fill())
 					return false;
@@ -1291,10 +1328,15 @@ bool SdlContext::handleEvent(const SDL_WindowEvent& ev)
 		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
 			if (!resizeToScale(window))
 				return false;
-			if (!window->fill())
-				return false;
-			if (!drawToWindow(*window))
-				return false;
+			if (usesRenderThread())
+				requestRedraw();
+			else
+			{
+				if (!window->fill())
+					return false;
+				if (!drawToWindow(*window))
+					return false;
+			}
 			if (!restoreCursor())
 				return false;
 			break;
@@ -1499,6 +1541,15 @@ SDL_FPoint SdlContext::screenToPixel(SDL_WindowID id, const SDL_FPoint& pos)
 		return {};
 	}
 
+	/* The presenter draws in window pixels, and window coordinates are pixels
+	 * on Windows, so only the local scale is left to undo. */
+	if (w->hasPresenter())
+	{
+		auto ppos = pos;
+		removeLocalScaling(ppos.x, ppos.y);
+		return ppos;
+	}
+
 	/* Ignore errors here, sometimes SDL has no renderer */
 	auto renderer = w->renderer();
 	if (!renderer)
@@ -1520,6 +1571,9 @@ SDL_FPoint SdlContext::pixelToScreen(SDL_WindowID id, const SDL_FPoint& pos)
 			return pos;
 		return {};
 	}
+
+	if (w->hasPresenter())
+		return applyLocalScaling(pos);
 
 	/* Ignore errors here, sometimes SDL has no renderer */
 	auto renderer = w->renderer();
@@ -1656,6 +1710,35 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		{
 			SdlWindow::setShowDamage(arg->Value != nullptr);
 		}
+		else if (strcmp(arg->Name, sdl_stats_log) == 0)
+		{
+			if (!arg->Value || !SdlWindow::setStatsLog(arg->Value))
+			{
+				WLog_ERR(CLIENT_TAG("SDL"), "/%s: can't open '%s'", sdl_stats_log,
+				         arg->Value ? arg->Value : "");
+				return -2;
+			}
+		}
+		else if (strcmp(arg->Name, sdl_render_driver) == 0)
+		{
+			if (!arg->Value || !SDL_SetHint(SDL_HINT_RENDER_DRIVER, arg->Value))
+				return -2;
+		}
+		else if (strcmp(arg->Name, stop_after_seconds) == 0)
+		{
+			const auto secs = arg->Value ? strtof(arg->Value, nullptr) : 0.0f;
+			if (secs <= 0.0f)
+				return -2;
+			sdl->_stopAfterNS = static_cast<Uint64>(secs * 1e9f);
+		}
+		else if (strcmp(arg->Name, sdl_presenter) == 0)
+		{
+			SdlWindow::setPresenter(arg->Value != nullptr);
+		}
+		else if (strcmp(arg->Name, sdl_no_vsync) == 0)
+		{
+			SdlWindow::setVSync(arg->Value == nullptr);
+		}
 		else if (strcmp(arg->Name, sdl_touchpad_gestures) == 0)
 		{
 			sdl->_touchpadGestures = arg->Value != nullptr;
@@ -1680,6 +1763,149 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		}
 	}
 	return 0;
+}
+
+bool SdlContext::usesRenderThread() const
+{
+	return _renderActive;
+}
+
+void SdlContext::requestRedraw()
+{
+#if defined(_WIN32)
+	_renderRedraw = true;
+	if (_renderWake)
+		(void)SetEvent(_renderWake);
+#endif
+}
+
+void SdlContext::startRenderThread()
+{
+#if defined(_WIN32)
+	if (_renderThread.joinable() || _windows.empty())
+		return;
+	for (const auto& window : _windows)
+	{
+		if (!window.second.hasPresenter())
+			return;
+	}
+
+	if (!_renderWake)
+		_renderWake = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+	if (!_renderWake)
+		return;
+
+	_renderStop = false;
+	/* Anything queued before the thread existed went to the SDL thread, which
+	 * won't draw to these windows. */
+	_renderRedraw = true;
+	_renderThread = std::thread(&SdlContext::renderThreadMain, this);
+	_renderActive = true;
+	(void)SetEvent(_renderWake);
+#endif
+}
+
+void SdlContext::stopRenderThread()
+{
+#if defined(_WIN32)
+	if (!_renderThread.joinable())
+		return;
+	/* Updates queued from here on go to the SDL thread again, which may draw
+	 * to the windows once this thread is gone. */
+	_renderActive = false;
+	_renderStop = true;
+	(void)SetEvent(_renderWake);
+	_renderThread.join();
+#endif
+}
+
+void SdlContext::renderThreadMain()
+{
+#if defined(_WIN32)
+	std::vector<HANDLE> handles;
+	std::vector<SdlWindow*> waiting;
+
+	while (!_renderStop)
+	{
+		/* Sleep until there is something to upload or, for windows with a
+		 * frame uploaded, until their swap chain takes it. Waiting on both is
+		 * what lets a newer frame replace one that is still waiting. */
+		handles.clear();
+		waiting.clear();
+		handles.push_back(_renderWake);
+		for (auto& window : _windows)
+		{
+			auto& w = window.second;
+			/* No handle while the presenter has lost its device. */
+			if (w.presentPending() && !w.hasPresentSlot() && w.presentHandle() &&
+			    (handles.size() < MAXIMUM_WAIT_OBJECTS))
+			{
+				handles.push_back(w.presentHandle());
+				waiting.push_back(&w);
+			}
+		}
+
+		const auto rc = WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(),
+		                                       FALSE, 1000);
+		if (_renderStop)
+			break;
+		if ((rc > WAIT_OBJECT_0) && (rc < WAIT_OBJECT_0 + handles.size()))
+			waiting[rc - WAIT_OBJECT_0 - 1]->presentSlot();
+		else if (rc == WAIT_FAILED)
+		{
+			WLog_Print(getWLog(), WLOG_ERROR, "render thread: wait failed, error %" PRIu32,
+			           static_cast<UINT32>(GetLastError()));
+			Sleep(100);
+		}
+
+		/* Not only when the wake event fired: it is cheap to look, and a frame
+		 * queued while a swap chain was signalled should not wait a round. */
+		const auto redraw = _renderRedraw.exchange(false);
+		const auto rects = popAll();
+		if ((redraw || !rects.empty()) && isConnected())
+		{
+			/* A redraw is a full upload, which covers the queued rects. */
+			static const std::vector<SDL_Rect> everything;
+			bool ok = true;
+			for (auto& window : _windows)
+			{
+				if (!uploadToWindow(window.second, redraw ? everything : rects))
+					ok = false;
+			}
+			if (!ok)
+				WLog_Print(getWLog(), WLOG_ERROR, "render thread: upload failed");
+
+			/* The uploads were the last read of the superseded gfxredir
+			 * buffers, so hand them back before waiting for the display. */
+			const auto ackStart = SDL_GetTicksNS();
+			gfxRedirCompletePresent();
+			SdlWindow::addStat(SdlWindow::STAT_ACK, SDL_GetTicksNS() - ackStart);
+		}
+
+		for (auto& window : _windows)
+		{
+			auto& w = window.second;
+			if (!w.presentPending())
+				continue;
+			auto handle = static_cast<HANDLE>(w.presentHandle());
+			if (!w.hasPresentSlot() &&
+			    (!handle || (WaitForSingleObject(handle, 0) == WAIT_OBJECT_0)))
+				w.presentSlot();
+			if (w.hasPresentSlot())
+				w.updateSurface();
+			if (w.takeRedrawRequest())
+			{
+				_renderRedraw = true;
+				(void)SetEvent(_renderWake);
+			}
+		}
+	}
+#endif
+}
+
+bool SdlContext::stopTimeReached() const
+{
+	return (_stopAfterNS != 0) && (SDL_GetTicksNS() >= _stopAfterNS);
 }
 
 CriticalSection& SdlContext::lock()
@@ -1823,7 +2049,9 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	_gfxRedirSurface = buffer.surface.get();
 
 	_gfxRedir = redir;
-	_gfxRedirPending.push_back({ present->windowId, present->presentId, GetTickCount64() });
+	_gfxRedirPending.push_back(
+	    { present->windowId, present->presentId, GetTickCount64(), SDL_GetTicksNS() });
+	SdlWindow::countFrameIn();
 	_gfxRedirQueueCount++;
 
 	const auto queueCount = _gfxRedirQueueCount;
@@ -1955,7 +2183,9 @@ bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
 
 	/* The uploads were the last read of the superseded gfxredir buffers, so
 	 * hand them back before waiting for vsync. */
+	const auto ackStart = SDL_GetTicksNS();
 	gfxRedirCompletePresent();
+	SdlWindow::addStat(SdlWindow::STAT_ACK, SDL_GetTicksNS() - ackStart);
 
 	for (auto& window : _windows)
 		window.second.updateSurface();
@@ -2149,6 +2379,18 @@ int64_t SdlContext::monitorId(uint32_t index) const
 
 bool SdlContext::pushUpdate(std::vector<SDL_Rect>&& rects)
 {
+#if defined(_WIN32)
+	/* The render thread takes it from here; no event for the SDL thread. */
+	if (_renderActive)
+	{
+		{
+			std::unique_lock lock(_queue_mux);
+			_queue.emplace(std::move(rects));
+		}
+		return SetEvent(_renderWake) != FALSE;
+	}
+#endif
+
 	bool notify = false;
 	{
 		std::unique_lock lock(_queue_mux);
