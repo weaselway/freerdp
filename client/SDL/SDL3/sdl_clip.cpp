@@ -515,6 +515,15 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
 
 	clipboard->clearServerFormats();
 
+	{
+		/* Whatever is in there was put in to answer the server's requests for
+		 * the local clipboard. ClipDataCb must not take it for the new content
+		 * of the server's. */
+		ClipboardLockGuard systemlock(clipboard->_system);
+		std::scoped_lock lock(clipboard->_lock);
+		ClipboardEmpty(clipboard->_system);
+	}
+
 	for (UINT32 i = 0; i < formatList->numFormats; i++)
 	{
 		const CLIPRDR_FORMAT* format = &formatList->formats[i];
