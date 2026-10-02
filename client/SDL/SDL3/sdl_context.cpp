@@ -1506,9 +1506,32 @@ bool SdlContext::eventToPixelCoordinates(SDL_WindowID id, SDL_Event& ev)
 
 	/* Ignore errors here, sometimes SDL has no renderer */
 	auto renderer = w->renderer();
-	if (!renderer)
-		return true;
-	return SDL_ConvertEventToRenderCoordinates(renderer, &ev);
+	if (renderer)
+		return SDL_ConvertEventToRenderCoordinates(renderer, &ev);
+
+	/* Without a renderer (presenter) window coordinates already are pixels,
+	 * but finger events are normalized to the window size. */
+	switch (ev.type)
+	{
+		case SDL_EVENT_FINGER_DOWN:
+		case SDL_EVENT_FINGER_UP:
+		case SDL_EVENT_FINGER_MOTION:
+		case SDL_EVENT_FINGER_CANCELED:
+		{
+			int pw = 0;
+			int ph = 0;
+			if (!SDL_GetWindowSizeInPixels(w->window(), &pw, &ph))
+				return false;
+			ev.tfinger.x *= static_cast<float>(pw);
+			ev.tfinger.y *= static_cast<float>(ph);
+			ev.tfinger.dx *= static_cast<float>(pw);
+			ev.tfinger.dy *= static_cast<float>(ph);
+		}
+		break;
+		default:
+			break;
+	}
+	return true;
 }
 
 SDL_FPoint SdlContext::applyLocalScaling(const SDL_FPoint& val) const
