@@ -143,9 +143,14 @@ bool sdl_Pointer_Set_Process(SdlContext* sdl)
 	auto isw = static_cast<float>(pointer->width);
 	auto ish = static_cast<float>(pointer->height);
 
+	/* The mouse is somewhere else, so there is nothing to show the image on.
+	 * Not a reason to switch to the default cursor: that would become the
+	 * cursor type, and it, rather than this image, is what the mouse entering
+	 * the window would bring back. A server that only sends the shape when it
+	 * changes would be left with the system arrow until the next change. */
 	auto window = SDL_GetMouseFocus();
 	if (!window)
-		return sdl_Pointer_SetDefault(context);
+		return true;
 
 	const SDL_FRect orig{ ix, iy, isw, ish };
 
