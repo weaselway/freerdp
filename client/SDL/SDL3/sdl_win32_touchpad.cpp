@@ -118,33 +118,12 @@ namespace
 	 * main/UI thread (the Win32 message pump). */
 	std::unordered_map<HANDLE, DeviceInfo> g_devices;
 
-	/* Touchpad HID coordinates are relative to the touchpad's own physical
-	 * surface -- there's no calibrated relationship to screen or window
-	 * position at all (unlike a touchscreen digitizer, which is display-
-	 * registered). So contacts aren't placed at their raw touchpad position;
-	 * each gesture is anchored at the window's center when it starts, and
-	 * driven from there by the touchpad-relative delta since that start,
-	 * scaled up (a full gesture shouldn't require sweeping the entire
-	 * physical pad).
-	 *
-	 * Deliberately NOT clamped to [0,1]: the server (meta-rdp-server.c's
-	 * RDPEI handling) never treats this as a literal screen/window position
-	 * -- it only ever diffs consecutive reports to get a gesture delta, the
-	 * real pointer stays driven by real mouse events. Clamping here would
-	 * cap how far a single sustained gesture can ever travel; once a slow,
-	 * held swipe pushed the anchored position to the clamp boundary, every
-	 * further report -- no matter how much further the fingers kept moving
-	 * -- produced an identical position and thus a zero delta, silently
-	 * freezing accumulated gesture progress right there. A fast flick
-	 * reaches the same boundary but has enough velocity beforehand to
-	 * commit via GNOME Shell's velocity-projection path; a slow deliberate
-	 * swipe doesn't, falls back to accumulated progress, and that progress
-	 * had already plateaued. */
-	constexpr float kGestureAnchor = 0.5f;
-	/* Sensitivity is tuned server side (META_RDP_GESTURE_DELTA_SCALE in
-	 * mutter's meta-rdp-server.c, which also normalizes by desktop size), so
-	 * leave this alone and change that instead. */
-	constexpr float kGestureScale = 2.5f;
+	/* Contacts are forwarded where they are on the pad: a fraction of the
+	 * pad's surface becomes that fraction of the session. The position has
+	 * no meaning on the screen -- a touchpad is not registered to a display
+	 * -- and the server does not take it for one. It feeds the contacts to a
+	 * virtual touchpad, and the compositor's own input stack (libinput)
+	 * recognizes swipes and pinches from the fingers' real geometry. */
 
 	/* Precision Touchpad firmware commonly can't fit every simultaneously-
 	 * down finger's data into a single HID report once 3+ fingers are down,
@@ -195,30 +174,18 @@ namespace
 
 	struct ActiveContact
 	{
-		float startX = 0.0f;
-		float startY = 0.0f;
 		uint32_t missingStreak = 0;
-		/* Last position forwarded for this contact, i.e. where the finger
-		 * actually is right now in the gesture-relative space the server
-		 * sees. FINGER_UP must be reported *there*, not back at
-		 * kGestureAnchor: FreeRDP's rdpei_touch_end() (rdpei_main.c) turns
+		/* Last position forwarded for this contact. FINGER_UP must be
+		 * reported there: FreeRDP's rdpei_touch_end() (rdpei_main.c) turns
 		 * one touch-up into two wire contacts -- an UPDATE at the given
-		 * coordinates, immediately followed by UP at the same ones. Passing
-		 * the anchor therefore teleports the lifting finger all the way
-		 * back to the gesture's origin one frame *before* the server drops
-		 * it, dragging the 3-finger centroid backwards by roughly a third
-		 * of everything swiped so far, and that bogus reversal is emitted
-		 * as a real gesture UPDATE. Confirmed against mutter's log: 827px
-		 * of travel ended with a -275px (== travel/3) jump right at
-		 * lift-off -- the "swipe snaps back ~30%, then re-animates"
-		 * artifact. Starts at the anchor since that's where DOWN is
-		 * reported. */
-		float lastX = kGestureAnchor;
-		float lastY = kGestureAnchor;
+		 * coordinates, immediately followed by UP at the same ones -- so any
+		 * other position would make the lifting finger jump first. */
+		float lastX = 0.0f;
+		float lastY = 0.0f;
 	};
 
-	/* Keyed by the raw HID contact identifier, so DOWN/MOTION/UP -- and the
-	 * gesture-relative anchor above -- can be derived across reports.
+	/* Keyed by the raw HID contact identifier, so DOWN/MOTION/UP can be derived
+	 * across reports.
 	 * Non-empty if and only if a gesture is currently being forwarded. */
 	std::unordered_map<UINT32, ActiveContact> g_activeContacts;
 
@@ -593,18 +560,16 @@ namespace
 
 			for (const auto& c : down)
 			{
-				g_activeContacts.emplace(c.contactId, ActiveContact{ c.x, c.y, 0 });
+				g_activeContacts.emplace(c.contactId, ActiveContact{ 0, c.x, c.y });
 
 				WLog_VRB(TAG,
 				         "touchpad contact id=%" PRIu32 " link=%u event=down rawX=%lu rawY=%lu "
-				         "touchpadX=%.3f touchpadY=%.3f -> x=%.3f y=%.3f",
+				         "x=%.3f y=%.3f",
 				         c.contactId, c.linkCollection, static_cast<unsigned long>(c.rawX),
 				         static_cast<unsigned long>(c.rawY), static_cast<double>(c.x),
-				         static_cast<double>(c.y), static_cast<double>(kGestureAnchor),
-				         static_cast<double>(kGestureAnchor));
+				         static_cast<double>(c.y));
 
-				pushFingerEvent(windowID, SDL_EVENT_FINGER_DOWN, c.contactId, kGestureAnchor,
-				                kGestureAnchor);
+				pushFingerEvent(windowID, SDL_EVENT_FINGER_DOWN, c.contactId, c.x, c.y);
 			}
 			return;
 		}
@@ -624,20 +589,19 @@ namespace
 			    wasActive ? SDL_EVENT_FINGER_MOTION : SDL_EVENT_FINGER_DOWN;
 
 			if (!wasActive)
-				it = g_activeContacts.emplace(c.contactId, ActiveContact{ c.x, c.y, 0 }).first;
+				it = g_activeContacts.emplace(c.contactId, ActiveContact{ 0, c.x, c.y }).first;
 			else
 				it->second.missingStreak = 0;
 
-			const float px = kGestureAnchor + (c.x - it->second.startX) * kGestureScale;
-			const float py = kGestureAnchor + (c.y - it->second.startY) * kGestureScale;
+			const float px = c.x;
+			const float py = c.y;
 
 			WLog_VRB(TAG,
 			         "touchpad contact id=%" PRIu32 " link=%u event=%u rawX=%lu rawY=%lu "
-			         "touchpadX=%.3f touchpadY=%.3f -> x=%.3f y=%.3f",
+			         "x=%.3f y=%.3f",
 			         c.contactId, c.linkCollection, static_cast<unsigned>(evtype),
 			         static_cast<unsigned long>(c.rawX), static_cast<unsigned long>(c.rawY),
-			         static_cast<double>(c.x), static_cast<double>(c.y), static_cast<double>(px),
-			         static_cast<double>(py));
+			         static_cast<double>(px), static_cast<double>(py));
 
 			it->second.lastX = px;
 			it->second.lastY = py;
