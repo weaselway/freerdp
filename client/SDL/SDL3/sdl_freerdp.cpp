@@ -705,6 +705,9 @@ int main(int argc, char* argv[])
 		return -1;
 	if (!SDL_SetHint(SDL_HINT_SCREENSAVER_INHIBIT_ACTIVITY_NAME, "RDP session running"))
 		return -1;
+	/* Alt+F4 is for the window in the session, like every other key. */
+	if (!SDL_SetHint(SDL_HINT_WINDOWS_CLOSE_ON_ALT_F4, "0"))
+		return -1;
 #if SDL_VERSION_ATLEAST(3, 4, 0)
 	if (!SDL_SetHint(SDL_HINT_MOUSE_DPI_SCALE_CURSORS, "1"))
 		return -1;
