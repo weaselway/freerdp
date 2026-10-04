@@ -65,8 +65,8 @@ again, or `cmake --build build/freerdp`.
 [build.yml](.github/workflows/build.yml) builds the package on pushes to
 `main` and on pull requests and uploads the exe and DLLs as an artifact.
 [release.yml](.github/workflows/release.yml) does the same for a tag and
-attaches `freerdp-<tag>.zip` to a release, which is what weaselway's
-`install-freerdp.sh` downloads. Both use weaselway.cachix.org and push what
+attaches `freerdp-<tag>.zip` to a release, for running the client without
+the weaselway image. Both use weaselway.cachix.org and push what
 they build to it (token in the `CACHIX_AUTH_TOKEN` secret), so the toolchain
 is not compiled on every run and the weaselway image build finds the client
 there. Pull requests from forks get no secrets and only read the cache.
