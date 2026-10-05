@@ -1,7 +1,7 @@
 # Building FreeRDP for weaselway (Nix)
 
 This builds the Windows SDL3 client (`sdl-freerdp.exe`) that
-`weaselway/start-viewer.sh` runs. It cross-compiles with the dev shell in
+`weaselway/ww-start-viewer.sh` runs. It cross-compiles with the dev shell in
 [flake.nix](flake.nix) (nixpkgs `nixos-26.05`, `pkgsCross.ucrt64`). Nothing
 is installed.
 
