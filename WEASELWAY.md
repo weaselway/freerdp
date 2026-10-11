@@ -45,6 +45,12 @@ again, or `cmake --build build/freerdp`.
 
 ## Notes
 
+- The `wwdisplay` channel (`channels/wwdisplay`, DVC `Weaselway::Display`)
+  is weaselway's own: the client sends the physical refresh rate of the
+  monitor its window is on, the highest with dynamic refresh rate or VRR,
+  and weaselwayd gives the virtual display that rate. The format is in
+  `include/freerdp/channels/wwdisplay.h`.
+
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
   that.

@@ -65,6 +65,7 @@
 
 #include <freerdp/channels/audin.h>
 #include <freerdp/channels/echo.h>
+#include <freerdp/channels/wwdisplay.h>
 
 #include <freerdp/client/cmdline.h>
 #include <freerdp/version.h>
@@ -6456,6 +6457,10 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 		/* The server only opens the DVC when it wants shared-memory graphics
 		 * redirection, so listening unconditionally costs nothing. */
 		{ FreeRDP_BOOL_UNUSED, "gfxredir", nullptr },
+#endif
+#ifdef CHANNEL_WWDISPLAY_CLIENT
+		/* Like gfxredir: only weaselwayd opens it. */
+		{ FreeRDP_BOOL_UNUSED, WWDISPLAY_CHANNEL_NAME, nullptr },
 #endif
 #ifdef CHANNEL_SSHAGENT_CLIENT
 		{ FreeRDP_SupportSSHAgentChannel, "sshagent", nullptr },

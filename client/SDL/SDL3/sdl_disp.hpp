@@ -18,11 +18,13 @@
  */
 #pragma once
 
+#include <atomic>
 #include <vector>
 
 #include <freerdp/types.h>
 #include <freerdp/event.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/wwdisplay.h>
 
 #include "sdl_types.hpp"
 
@@ -43,6 +45,10 @@ class sdlDispContext
 	[[nodiscard]] bool init(DispClientContext* disp);
 	[[nodiscard]] bool uninit(DispClientContext* disp);
 
+	/* weaselway's channel for the monitor's refresh rate. */
+	void initRefreshRate(WwDisplayClientContext* ww);
+	void uninitRefreshRate();
+
 	[[nodiscard]] bool handleEvent(const SDL_DisplayEvent& ev);
 	[[nodiscard]] bool handleEvent(const SDL_WindowEvent& ev);
 
@@ -57,6 +63,8 @@ class sdlDispContext
 
 	[[nodiscard]] bool addTimer();
 
+	void updateRefreshRate();
+
 	[[nodiscard]] bool updateMonitor(SDL_WindowID id);
 	[[nodiscard]] bool updateMonitors(SDL_EventType type, SDL_DisplayID displayID);
 
@@ -69,6 +77,8 @@ class sdlDispContext
 
 	SdlContext* _sdl = nullptr;
 	DispClientContext* _disp = nullptr;
+	/* Set on the channel's thread, used on the SDL thread. */
+	std::atomic<WwDisplayClientContext*> _ww = nullptr;
 	UINT64 _lastSentDate = 0;
 	bool _activated = false;
 	bool _waitingResize = false;

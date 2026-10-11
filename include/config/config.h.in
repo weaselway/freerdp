@@ -198,6 +198,8 @@
 #cmakedefine CHANNEL_VIDEO
 #cmakedefine CHANNEL_VIDEO_CLIENT
 #cmakedefine CHANNEL_VIDEO_SERVER
+#cmakedefine CHANNEL_WWDISPLAY
+#cmakedefine CHANNEL_WWDISPLAY_CLIENT
 
 /* Debug */
 #cmakedefine WITH_DEBUG_CERTIFICATE

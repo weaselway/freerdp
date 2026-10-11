@@ -29,6 +29,10 @@
 #include "sdl_input.hpp"
 #include "sdl_context.hpp"
 
+#if defined(_WIN32)
+#include "sdl_win32_refresh_rate.hpp"
+#endif
+
 #include <freerdp/log.h>
 #define TAG CLIENT_TAG("sdl.disp")
 
@@ -341,9 +345,70 @@ bool sdlDispContext::updateMonitors(SDL_EventType type, SDL_DisplayID displayID)
 	return addTimer();
 }
 
+void sdlDispContext::initRefreshRate(WwDisplayClientContext* ww)
+{
+	_ww = ww;
+	/* Called on the channel's thread once the server opened it; the window
+	 * is the SDL thread's. */
+	if (!SDL_RunOnMainThread([](void* self)
+	                         { static_cast<sdlDispContext*>(self)->updateRefreshRate(); }, this,
+	                         false))
+		WLog_WARN(TAG, "cannot query the refresh rate: %s", SDL_GetError());
+}
+
+void sdlDispContext::uninitRefreshRate()
+{
+	_ww = nullptr;
+}
+
+/* The plugin drops repeats and holds the rate until the server opens the
+ * channel, so this can run on every event that might change it. */
+void sdlDispContext::updateRefreshRate()
+{
+	auto ww = _ww.load();
+	if (!ww)
+		return;
+	auto window = _sdl->getFirstWindow();
+	if (!window)
+		return;
+
+	UINT32 mhz = 0;
+#if defined(_WIN32)
+	auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(
+	    SDL_GetWindowProperties(window->window()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+	if (hwnd)
+		mhz = sdl_win32_refresh_rate_mhz(hwnd);
+#endif
+	if (mhz == 0)
+	{
+		const auto mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window->window()));
+		if (mode && mode->refresh_rate > 0.0f)
+			mhz = static_cast<UINT32>(mode->refresh_rate * 1000.0f + 0.5f);
+	}
+	if (mhz == 0)
+		return;
+
+	WLog_DBG(TAG, "monitor refresh rate %" PRIu32 " mHz", mhz);
+	const auto rc = ww->SetRefreshRate(ww, mhz);
+	if (rc != CHANNEL_RC_OK)
+		WLog_WARN(TAG, "sending the refresh rate failed: 0x%08" PRIx32, rc);
+}
+
 bool sdlDispContext::handleEvent(const SDL_DisplayEvent& ev)
 {
 	const auto cat = SDL_LOG_CATEGORY_APPLICATION;
+	switch (ev.type)
+	{
+		case SDL_EVENT_DISPLAY_ADDED:
+		case SDL_EVENT_DISPLAY_REMOVED:
+		case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED:
+		case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED:
+			updateRefreshRate();
+			break;
+		default:
+			break;
+	}
+
 	switch (ev.type)
 	{
 		case SDL_EVENT_DISPLAY_ADDED:
@@ -385,6 +450,16 @@ bool sdlDispContext::handleEvent(const SDL_WindowEvent& ev)
 
 	auto bordered = freerdp_settings_get_bool(_sdl->context()->settings, FreeRDP_Decorations);
 	window->setBordered(bordered);
+
+	switch (ev.type)
+	{
+		case SDL_EVENT_WINDOW_SHOWN:
+		case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+			updateRefreshRate();
+			break;
+		default:
+			break;
+	}
 
 	switch (ev.type)
 	{
