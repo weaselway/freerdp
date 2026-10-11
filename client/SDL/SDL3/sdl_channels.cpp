@@ -27,6 +27,7 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/gfxredir.h>
+#include <freerdp/client/wwdisplay.h>
 #include <freerdp/channels/rdpewa.h>
 
 #include "sdl_channels.hpp"
@@ -193,6 +194,12 @@ void sdl_OnChannelConnectedEventHandler(void* context, const ChannelConnectedEve
 
 		WLog_Print(sdl->getWLog(), WLOG_INFO, "gfxredir channel connected");
 	}
+	else if (strcmp(e->name, WWDISPLAY_DVC_CHANNEL_NAME) == 0)
+	{
+		auto ww = reinterpret_cast<WwDisplayClientContext*>(e->pInterface);
+		WINPR_ASSERT(ww);
+		sdl->getDisplayChannelContext().initRefreshRate(ww);
+	}
 	else
 		freerdp_client_OnChannelConnectedEventHandler(context, e);
 }
@@ -239,6 +246,8 @@ void sdl_OnChannelDisconnectedEventHandler(void* context, const ChannelDisconnec
 		sdl->gfxRedirReset();
 		redir->custom = nullptr;
 	}
+	else if (strcmp(e->name, WWDISPLAY_DVC_CHANNEL_NAME) == 0)
+		sdl->getDisplayChannelContext().uninitRefreshRate();
 	else
 		freerdp_client_OnChannelDisconnectedEventHandler(context, e);
 }
