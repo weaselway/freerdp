@@ -397,8 +397,7 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 			auto& path = _statsUploads[info.zeroCopy ? 1 : 0];
 			path.count++;
 			path.bytes += info.bytes;
-			path.busyNS += (now - start) - std::min(info.waitNS, now - start);
-			path.waitNS += info.waitNS;
+			path.busyNS += now - start;
 		}
 	}
 	_gdiTextureW = surface->w;
@@ -821,6 +820,24 @@ void* SdlWindow::presentHandle() const
 	return nullptr;
 }
 
+bool SdlWindow::copyPending() const
+{
+#if defined(_WIN32)
+	if (_presenter)
+		return _presenter->copyPending();
+#endif
+	return false;
+}
+
+void* SdlWindow::copyHandle() const
+{
+#if defined(_WIN32)
+	if (_presenter)
+		return _presenter->copyHandle();
+#endif
+	return nullptr;
+}
+
 bool SdlWindow::presentPending() const
 {
 	return _presentPending;
@@ -1074,10 +1091,8 @@ bool SdlWindow::updateStats()
 			const auto n = static_cast<double>(path.count);
 			const auto mib = static_cast<double>(path.bytes) / (1024.0 * 1024.0);
 			(void)SDL_snprintf(buffer, sizeof(buffer),
-			                   "upload %s: busy %.3f wait %.3f ms/upload  busy %.3f ms/MiB  "
-			                   "%.2f MiB/upload",
+			                   "upload %s: busy %.3f ms/upload  %.3f ms/MiB  %.2f MiB/upload",
 			                   paths[x], static_cast<double>(path.busyNS) / n / 1e6,
-			                   static_cast<double>(path.waitNS) / n / 1e6,
 			                   static_cast<double>(path.busyNS) / 1e6 / mib, mib / n);
 			_statsText.emplace_back(buffer);
 		}
