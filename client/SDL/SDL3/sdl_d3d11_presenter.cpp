@@ -25,7 +25,8 @@
 
 #define COBJMACROS
 #include <windows.h>
-#include <d3d11.h>
+#include <d3d11_4.h>
+#include <d3d12.h>
 #include <dxgi1_5.h>
 #include <d3dcompiler.h>
 
@@ -206,6 +207,30 @@ struct SdlD3D11Presenter::Impl
 	SDL_Point offset{ 0, 0 };
 	SDL_FPoint scale{ 1.0f, 1.0f };
 
+	/* Zero copy: a Direct3D 12 device on the same adapter copies from the
+	 * shared memory section into frame, which it opens through an NT handle.
+	 * One fence, shared by both devices, orders their work on frame. Set up
+	 * in init() when wanted; zeroCopy is false when that or a later copy
+	 * failed. */
+	bool wantZeroCopy = false;
+	bool zeroCopy = false;
+	ComPtr<ID3D11DeviceContext4> context4;
+	ComPtr<ID3D12Device3> d12;
+	ComPtr<ID3D12CommandQueue> queue;
+	ComPtr<ID3D12CommandAllocator> allocator;
+	ComPtr<ID3D12GraphicsCommandList> list;
+	ComPtr<ID3D12Fence> fence;
+	ComPtr<ID3D11Fence> fence11;
+	UINT64 fenceValue = 0;
+	HANDLE fenceEvent = nullptr;
+	ComPtr<ID3D12Resource> frame12;
+	/* The section as a heap, and a buffer over all of it to copy from. */
+	ComPtr<ID3D12Heap> poolHeap;
+	ComPtr<ID3D12Resource> poolBuffer;
+	void* poolSection = nullptr;
+	Uint64 poolSerial = 0;
+	bool warnedLayout = false;
+
 	~Impl()
 	{
 		release();
@@ -218,7 +243,196 @@ struct SdlD3D11Presenter::Impl
 	bool createBackBufferView();
 	bool resizeIfNeeded();
 	bool ensureFrame(int w, int h, DXGI_FORMAT format, bool& recreated);
+
+	bool initZeroCopy(IDXGIAdapter* adapter);
+	void releaseZeroCopy();
+	void disableZeroCopy(HRESULT hr, const char* what);
+	bool copyFromPool(void* section, Uint64 serial, Uint64 offset, int pitch,
+	                  const std::vector<SDL_Rect>& rects, Uint64& waitNS);
 };
+
+bool SdlD3D11Presenter::Impl::initZeroCopy(IDXGIAdapter* adapter)
+{
+	ComPtr<ID3D11Device5> device5;
+	if (failed(device->QueryInterface(IID_PPV_ARGS(device5.put())), "ID3D11Device5") ||
+	    failed(context->QueryInterface(IID_PPV_ARGS(context4.put())), "ID3D11DeviceContext4") ||
+	    failed(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(d12.put())),
+	           "D3D12CreateDevice"))
+		return false;
+
+	D3D12_FEATURE_DATA_EXISTING_HEAPS heaps = {};
+	if (FAILED(d12->CheckFeatureSupport(D3D12_FEATURE_EXISTING_HEAPS, &heaps, sizeof(heaps))) ||
+	    !heaps.Supported)
+	{
+		SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "d3d11 presenter: no existing heaps, no zero copy");
+		return false;
+	}
+
+	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+	if (failed(d12->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(queue.put())),
+	           "CreateCommandQueue") ||
+	    failed(d12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+	                                       IID_PPV_ARGS(allocator.put())),
+	           "CreateCommandAllocator") ||
+	    failed(d12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr,
+	                                  IID_PPV_ARGS(list.put())),
+	           "CreateCommandList") ||
+	    failed(list->Close(), "Close") ||
+	    failed(d12->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(fence.put())),
+	           "CreateFence"))
+		return false;
+
+	HANDLE shared = nullptr;
+	if (failed(d12->CreateSharedHandle(fence.get(), nullptr, GENERIC_ALL, nullptr, &shared),
+	           "CreateSharedHandle (fence)"))
+		return false;
+	const auto hr = device5->OpenSharedFence(shared, IID_PPV_ARGS(fence11.put()));
+	CloseHandle(shared);
+	if (failed(hr, "OpenSharedFence"))
+		return false;
+
+	fenceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+	fenceValue = 0;
+	return fenceEvent != nullptr;
+}
+
+void SdlD3D11Presenter::Impl::releaseZeroCopy()
+{
+	zeroCopy = false;
+	poolBuffer.reset();
+	poolHeap.reset();
+	poolSection = nullptr;
+	poolSerial = 0;
+	frame12.reset();
+	if (fenceEvent)
+		CloseHandle(fenceEvent);
+	fenceEvent = nullptr;
+	fence11.reset();
+	fence.reset();
+	list.reset();
+	allocator.reset();
+	queue.reset();
+	d12.reset();
+	context4.reset();
+}
+
+/* Zero copy is off from here on; uploads go through the staging ring. */
+void SdlD3D11Presenter::Impl::disableZeroCopy(HRESULT hr, const char* what)
+{
+	SDL_LogWarn(SDL_LOG_CATEGORY_RENDER,
+	            "d3d11 presenter: %s failed (0x%08lx), zero copy off", what,
+	            static_cast<unsigned long>(hr));
+	if (d12 && FAILED(d12->GetDeviceRemovedReason()))
+		checkLost();
+	releaseZeroCopy();
+}
+
+bool SdlD3D11Presenter::Impl::copyFromPool(void* section, Uint64 serial, Uint64 offset, int pitch,
+                                           const std::vector<SDL_Rect>& rects, Uint64& waitNS)
+{
+	if (!poolHeap || (poolSection != section) || (poolSerial != serial))
+	{
+		poolBuffer.reset();
+		poolHeap.reset();
+		poolSection = nullptr;
+		auto hr = d12->OpenExistingHeapFromFileMapping(static_cast<HANDLE>(section),
+		                                               IID_PPV_ARGS(poolHeap.put()));
+		if (FAILED(hr))
+		{
+			disableZeroCopy(hr, "OpenExistingHeapFromFileMapping");
+			return false;
+		}
+
+		D3D12_RESOURCE_DESC desc = {};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = poolHeap->GetDesc().SizeInBytes;
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		/* The heap is SHARED_CROSS_ADAPTER; E_INVALIDARG without this. */
+		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+		hr = d12->CreatePlacedResource(poolHeap.get(), 0, &desc, D3D12_RESOURCE_STATE_COPY_SOURCE,
+		                               nullptr, IID_PPV_ARGS(poolBuffer.put()));
+		if (FAILED(hr))
+		{
+			disableZeroCopy(hr, "CreatePlacedResource (pool)");
+			return false;
+		}
+		poolSection = section;
+		poolSerial = serial;
+	}
+
+	auto hr = allocator->Reset();
+	if (SUCCEEDED(hr))
+		hr = list->Reset(allocator.get(), nullptr);
+	if (FAILED(hr))
+	{
+		disableZeroCopy(hr, "command list Reset");
+		return false;
+	}
+
+	D3D12_TEXTURE_COPY_LOCATION src = {};
+	src.pResource = poolBuffer.get();
+	src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	src.PlacedFootprint.Offset = offset;
+	src.PlacedFootprint.Footprint = { frameFormat, static_cast<UINT>(frameW),
+		                              static_cast<UINT>(frameH), 1, static_cast<UINT>(pitch) };
+	D3D12_TEXTURE_COPY_LOCATION dst = {};
+	dst.pResource = frame12.get();
+	dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	for (const auto& r : rects)
+	{
+		const D3D12_BOX box{ static_cast<UINT>(r.x),       static_cast<UINT>(r.y),       0,
+			                 static_cast<UINT>(r.x + r.w), static_cast<UINT>(r.y + r.h), 1 };
+		list->CopyTextureRegion(&dst, box.left, box.top, 0, &src, &box);
+	}
+
+	/* Back to COMMON for Direct3D 11; the copy promoted it to COPY_DEST. */
+	D3D12_RESOURCE_BARRIER barrier = {};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = frame12.get();
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+	list->ResourceBarrier(1, &barrier);
+	hr = list->Close();
+	if (FAILED(hr))
+	{
+		disableZeroCopy(hr, "command list Close");
+		return false;
+	}
+
+	/* The copy waits for Direct3D 11 to be done with frame, and Direct3D 11
+	 * work from here on waits for the copy. */
+	context4->Signal(fence11.get(), ++fenceValue);
+	context->Flush();
+	queue->Wait(fence.get(), fenceValue);
+	ID3D12CommandList* lists[] = { list.get() };
+	queue->ExecuteCommandLists(1, lists);
+	queue->Signal(fence.get(), ++fenceValue);
+	context4->Wait(fence11.get(), fenceValue);
+
+	/* The caller acks the buffer to the server after upload() returns, and the
+	 * server may write it again from then on. So wait for the copy here.
+	 * shortcut: this blocks the render thread for the GPU copy; acking from
+	 * the fence instead would overlap it, worth it if the wait shows up. */
+	const auto waitStart = SDL_GetTicksNS();
+	if (fence->GetCompletedValue() < fenceValue)
+	{
+		hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+		if (SUCCEEDED(hr) && (WaitForSingleObject(fenceEvent, 1000) != WAIT_OBJECT_0))
+			hr = DXGI_ERROR_WAIT_TIMEOUT;
+		if (FAILED(hr))
+		{
+			disableZeroCopy(hr, "waiting for the copy");
+			return false;
+		}
+	}
+	waitNS = SDL_GetTicksNS() - waitStart;
+	return true;
+}
 
 void SdlD3D11Presenter::Impl::release()
 {
@@ -228,6 +442,7 @@ void SdlD3D11Presenter::Impl::release()
 		CloseHandle(waitable);
 	waitable = nullptr;
 
+	releaseZeroCopy();
 	overlayView.reset();
 	frameView.reset();
 	frame.reset();
@@ -307,6 +522,15 @@ bool SdlD3D11Presenter::Impl::init()
 	ComPtr<IDXGIFactory2> factory;
 	if (failed(adapter->GetParent(IID_PPV_ARGS(factory.put())), "IDXGIFactory2"))
 		return false;
+
+	if (wantZeroCopy)
+	{
+		zeroCopy = initZeroCopy(adapter.get());
+		if (!zeroCopy)
+			releaseZeroCopy();
+		SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "d3d11 presenter: zero copy %s",
+		            zeroCopy ? "on" : "unavailable");
+	}
 
 	ComPtr<IDXGIFactory5> factory5;
 	if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(factory5.put()))))
@@ -438,6 +662,7 @@ bool SdlD3D11Presenter::Impl::ensureFrame(int w, int h, DXGI_FORMAT format, bool
 	if (frame && (frameW == w) && (frameH == h) && (frameFormat == format))
 		return true;
 
+	frame12.reset();
 	frameView.reset();
 	frame.reset();
 	for (auto& texture : staging)
@@ -454,8 +679,26 @@ bool SdlD3D11Presenter::Impl::ensureFrame(int w, int h, DXGI_FORMAT format, bool
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_DEFAULT;
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	if (zeroCopy)
+		desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 	if (failed(device->CreateTexture2D(&desc, nullptr, frame.put()), "CreateTexture2D (frame)"))
 		return false;
+	if (zeroCopy)
+	{
+		ComPtr<IDXGIResource1> resource;
+		HANDLE shared = nullptr;
+		auto hr = frame->QueryInterface(IID_PPV_ARGS(resource.put()));
+		if (SUCCEEDED(hr))
+			hr = resource->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &shared);
+		if (SUCCEEDED(hr))
+		{
+			hr = d12->OpenSharedHandle(shared, IID_PPV_ARGS(frame12.put()));
+			CloseHandle(shared);
+		}
+		if (FAILED(hr))
+			disableZeroCopy(hr, "sharing the frame texture");
+	}
+	desc.MiscFlags = 0;
 	if (failed(device->CreateShaderResourceView(frame.get(), nullptr, frameView.put()),
 	           "CreateShaderResourceView"))
 		return false;
@@ -484,7 +727,8 @@ SdlD3D11Presenter::SdlD3D11Presenter(std::unique_ptr<Impl> impl) : _impl(std::mo
 
 SdlD3D11Presenter::~SdlD3D11Presenter() = default;
 
-std::unique_ptr<SdlD3D11Presenter> SdlD3D11Presenter::create(void* hwnd, bool vsync)
+std::unique_ptr<SdlD3D11Presenter> SdlD3D11Presenter::create(void* hwnd, bool vsync,
+                                                             bool zeroCopy)
 {
 	if (!hwnd)
 		return nullptr;
@@ -492,6 +736,7 @@ std::unique_ptr<SdlD3D11Presenter> SdlD3D11Presenter::create(void* hwnd, bool vs
 	auto impl = std::make_unique<Impl>();
 	impl->hwnd = static_cast<HWND>(hwnd);
 	impl->vsync = vsync;
+	impl->wantZeroCopy = zeroCopy;
 	if (!impl->init())
 		return nullptr;
 	return std::unique_ptr<SdlD3D11Presenter>(new SdlD3D11Presenter(std::move(impl)));
@@ -504,7 +749,7 @@ void SdlD3D11Presenter::setMapping(SDL_Point offset, SDL_FPoint scale)
 }
 
 bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>& rects,
-                               Uint64* bytes)
+                               UploadInfo* info)
 {
 	if (!surface || !surface->pixels)
 		return false;
@@ -545,6 +790,43 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 	if (clipped.empty())
 		return true;
 
+	const size_t bpp = 4;
+	Uint64 copied = 0;
+	for (const auto& r : clipped)
+		copied += static_cast<Uint64>(r.w) * static_cast<Uint64>(r.h) * bpp;
+	if (info)
+		*info = { copied, false, 0 };
+
+	if (_impl->zeroCopy)
+	{
+		const auto props = SDL_GetSurfaceProperties(surface);
+		auto section = SDL_GetPointerProperty(props, poolSectionProperty, nullptr);
+		const auto offset = static_cast<Uint64>(SDL_GetNumberProperty(props, poolOffsetProperty, 0));
+		const auto serial = static_cast<Uint64>(SDL_GetNumberProperty(props, poolSerialProperty, 0));
+		const bool aligned = (surface->pitch % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT == 0) &&
+		                     (offset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT == 0);
+		if (section && !aligned && !_impl->warnedLayout)
+		{
+			SDL_LogWarn(SDL_LOG_CATEGORY_RENDER,
+			            "d3d11 presenter: pitch %d or offset %" SDL_PRIu64
+			            " not aligned for Direct3D 12, copying with the CPU",
+			            surface->pitch, offset);
+			_impl->warnedLayout = true;
+		}
+
+		Uint64 waitNS = 0;
+		if (section && aligned &&
+		    _impl->copyFromPool(section, serial, offset, surface->pitch, clipped, waitNS))
+		{
+			if (info)
+				*info = { copied, true, waitNS };
+			return true;
+		}
+		/* The device may be gone; otherwise copy this frame the old way. */
+		if (_impl->lost)
+			return false;
+	}
+
 	auto context = _impl->context.get();
 	auto staging = _impl->staging[_impl->stagingNext].get();
 	_impl->stagingNext = (_impl->stagingNext + 1) % Impl::stagingCount;
@@ -556,8 +838,6 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 		return false;
 	}
 
-	const size_t bpp = 4;
-	Uint64 copied = 0;
 	for (const auto& r : clipped)
 	{
 		const auto* src = static_cast<const uint8_t*>(surface->pixels) +
@@ -578,7 +858,6 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 				dst += mapped.RowPitch;
 			}
 		}
-		copied += length * static_cast<size_t>(r.h);
 	}
 	context->Unmap(staging, 0);
 
@@ -592,9 +871,6 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 
 	/* Start the copies now: the caller is about to wait for the swap chain. */
 	context->Flush();
-
-	if (bytes)
-		*bytes = copied;
 	return true;
 }
 

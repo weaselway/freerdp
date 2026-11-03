@@ -38,6 +38,7 @@
 
 #if defined(_WIN32)
 #include "sdl_win32_touchpad.hpp"
+#include "sdl_d3d11_presenter.hpp"
 #endif
 
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
@@ -48,6 +49,7 @@ static constexpr auto sdl_no_vsync = "sdl-no-vsync";
 static constexpr auto sdl_render_driver = "sdl-render-driver";
 static constexpr auto stop_after_seconds = "stop-after-seconds";
 static constexpr auto sdl_presenter = "sdl-presenter";
+static constexpr auto sdl_zero_copy = "sdl-zero-copy";
 static constexpr auto sdl_stats_log = "sdl-stats-log";
 static constexpr auto sdl_touchpad_gestures = "sdl-touchpad-gestures";
 
@@ -100,6 +102,10 @@ SdlContext::SdlContext(rdpContext* context)
 	                  nullptr,
 	                  "Draw with a Direct3D 11 presenter on its own thread (Windows), "
 	                  "-sdl-presenter for the SDL renderer" });
+	_args.push_back({ sdl_zero_copy, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr, -1,
+	                  nullptr,
+	                  "Presenter copies gfxredir frames on the GPU with Direct3D 12 (Windows), "
+	                  "-sdl-zero-copy to copy them with the CPU" });
 	_args.push_back({ sdl_touchpad_gestures, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
 	                  nullptr, -1, nullptr,
 	                  "Forward 3+ finger touchpad gestures as touch input (Windows)" });
@@ -1962,6 +1968,10 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		{
 			SdlWindow::setPresenter(arg->Value != nullptr);
 		}
+		else if (strcmp(arg->Name, sdl_zero_copy) == 0)
+		{
+			SdlWindow::setZeroCopy(arg->Value != nullptr);
+		}
 		else if (strcmp(arg->Name, sdl_no_vsync) == 0)
 		{
 			SdlWindow::setVSync(arg->Value == nullptr);
@@ -2240,7 +2250,8 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	 * hands us different memory for the same id. */
 	auto& buffer = _gfxRedirBuffers[present->bufferId];
 	if (!buffer.surface || (buffer.data != mapping.data) || (buffer.width != width) ||
-	    (buffer.height != height) || (buffer.stride != stride) || (buffer.format != format))
+	    (buffer.height != height) || (buffer.stride != stride) || (buffer.format != format) ||
+	    (buffer.poolSerial != mapping.poolSerial))
 	{
 		buffer.surface = SDLSurfacePtr(
 		    SDL_CreateSurfaceFrom(width, height, format, const_cast<void*>(mapping.data), stride),
@@ -2254,7 +2265,21 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 		}
 
 		SDL_SetSurfaceBlendMode(buffer.surface.get(), SDL_BLENDMODE_NONE);
+#if defined(_WIN32)
+		/* Lets the presenter copy from the section on the GPU. */
+		if (mapping.section)
+		{
+			const auto props = SDL_GetSurfaceProperties(buffer.surface.get());
+			(void)SDL_SetPointerProperty(props, SdlD3D11Presenter::poolSectionProperty,
+			                             mapping.section);
+			(void)SDL_SetNumberProperty(props, SdlD3D11Presenter::poolOffsetProperty,
+			                            static_cast<Sint64>(mapping.offset));
+			(void)SDL_SetNumberProperty(props, SdlD3D11Presenter::poolSerialProperty,
+			                            static_cast<Sint64>(mapping.poolSerial));
+		}
+#endif
 		buffer.data = mapping.data;
+		buffer.poolSerial = mapping.poolSerial;
 		buffer.width = width;
 		buffer.height = height;
 		buffer.stride = stride;

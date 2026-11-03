@@ -42,6 +42,13 @@ extern "C"
 		UINT32 width;
 		UINT32 height;
 		UINT32 format; /* GFXREDIR_BUFFER_PIXEL_FORMAT_* */
+
+		/* For opening the pool on a GPU: the section HANDLE (nullptr if it
+		 * could only be opened read-only), the buffer's offset in it, and a
+		 * number that changes whenever the pool is mapped again. */
+		void* section;
+		UINT64 offset;
+		UINT64 poolSerial;
 	} GFXREDIR_BUFFER_MAPPING;
 
 	/* Every callback is optional; leave one nullptr to ignore that PDU. The

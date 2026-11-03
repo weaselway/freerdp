@@ -85,7 +85,7 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	{
 		auto hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(_window),
 		                                   SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
-		_presenter = SdlD3D11Presenter::create(hwnd, vsync());
+		_presenter = SdlD3D11Presenter::create(hwnd, vsync(), zeroCopyEnabled());
 		if (!_presenter)
 		{
 			SDL_LogWarn(SDL_LOG_CATEGORY_RENDER,
@@ -382,8 +382,8 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 	_presenter->setMapping(offset, scale);
 
 	const auto start = SDL_GetTicksNS();
-	Uint64 bytes = 0;
-	if (!_presenter->upload(surface, rects, &bytes))
+	SdlD3D11Presenter::UploadInfo info;
+	if (!_presenter->upload(surface, rects, &info))
 		return false;
 	const auto now = SDL_GetTicksNS();
 	addStat(STAT_UPLOAD, now - start);
@@ -391,7 +391,15 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 	if (showStats())
 	{
 		_statsBlits += rects.empty() ? 1 : rects.size();
-		_statsBytes += bytes;
+		_statsBytes += info.bytes;
+		if (info.bytes > 0)
+		{
+			auto& path = _statsUploads[info.zeroCopy ? 1 : 0];
+			path.count++;
+			path.bytes += info.bytes;
+			path.busyNS += (now - start) - std::min(info.waitNS, now - start);
+			path.waitNS += info.waitNS;
+		}
 	}
 	_gdiTextureW = surface->w;
 	_gdiTextureH = surface->h;
@@ -748,6 +756,7 @@ static bool s_presenter = true;
 #else
 static bool s_presenter = false;
 #endif
+static bool s_zeroCopy = true;
 static FILE* s_statsLog = nullptr; /* never closed, lives as long as the process */
 
 /* Stage timings. s_frame collects the frame being drawn and is folded into
@@ -786,6 +795,16 @@ void SdlWindow::setPresenter(bool enable)
 bool SdlWindow::presenterEnabled()
 {
 	return s_presenter;
+}
+
+void SdlWindow::setZeroCopy(bool enable)
+{
+	s_zeroCopy = enable;
+}
+
+bool SdlWindow::zeroCopyEnabled()
+{
+	return s_zeroCopy;
 }
 
 bool SdlWindow::hasPresenter() const
@@ -1043,6 +1062,26 @@ bool SdlWindow::updateStats()
 		}
 		_statsText.push_back(line);
 		s_stages.fill({});
+
+		/* Per upload path, to compare them on the same content: run once with
+		 * and once with -sdl-zero-copy. */
+		static const std::array<const char*, 2> paths = { "cpu copy ", "zero copy" };
+		for (size_t x = 0; x < _statsUploads.size(); x++)
+		{
+			const auto& path = _statsUploads[x];
+			if (path.count == 0)
+				continue;
+			const auto n = static_cast<double>(path.count);
+			const auto mib = static_cast<double>(path.bytes) / (1024.0 * 1024.0);
+			(void)SDL_snprintf(buffer, sizeof(buffer),
+			                   "upload %s: busy %.3f wait %.3f ms/upload  busy %.3f ms/MiB  "
+			                   "%.2f MiB/upload",
+			                   paths[x], static_cast<double>(path.busyNS) / n / 1e6,
+			                   static_cast<double>(path.waitNS) / n / 1e6,
+			                   static_cast<double>(path.busyNS) / 1e6 / mib, mib / n);
+			_statsText.emplace_back(buffer);
+		}
+		_statsUploads.fill({});
 
 		/* The overlay can't be copied out of, so the same numbers go to stderr
 		 * or the stats log. */

@@ -330,6 +330,7 @@ class SdlContext
 		int height = 0;
 		int stride = 0;
 		SDL_PixelFormat format = SDL_PIXELFORMAT_UNKNOWN;
+		UINT64 poolSerial = 0;
 	};
 
 	/* Present published by the channel thread, awaiting upload by the SDL
