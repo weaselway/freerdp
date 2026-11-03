@@ -34,6 +34,11 @@
  *  - Uploads go through a small ring of persistent staging textures. SDL's
  *    D3D11 renderer allocates and frees one per SDL_UpdateTexture call.
  *
+ * With zero copy on, a surface that lives in a shared memory section (see
+ * poolSectionProperty) is not copied by the CPU at all: a Direct3D 12 device
+ * on the same adapter opens the section as a heap and copies the rects
+ * straight into the desktop texture, which the two devices share.
+ *
  * It holds the whole desktop in one texture, so a present needs nothing from
  * the source surface. A lost device (driver update, GPU reset) is set up again
  * on the next upload. None of this is thread safe: apart from create() and the
@@ -42,8 +47,26 @@
 class SdlD3D11Presenter
 {
   public:
-	/* hwnd is the window's HWND. nullptr if Direct3D 11 can't be set up. */
-	[[nodiscard]] static std::unique_ptr<SdlD3D11Presenter> create(void* hwnd, bool vsync);
+	/* SDL_Surface properties marking a surface as a view of a shared memory
+	 * section: the section HANDLE (opened with FILE_MAP_ALL_ACCESS), the
+	 * surface's first pixel's offset in it, and a number that changes when the
+	 * section does. Without them upload() copies with the CPU. */
+	static constexpr auto poolSectionProperty = "freerdp.pool.section";
+	static constexpr auto poolOffsetProperty = "freerdp.pool.offset";
+	static constexpr auto poolSerialProperty = "freerdp.pool.serial";
+
+	/* What an upload did, for the stats overlay. */
+	struct UploadInfo
+	{
+		Uint64 bytes = 0;     /* copied */
+		bool zeroCopy = false; /* by the GPU, straight from the section */
+		Uint64 waitNS = 0;    /* blocked until the GPU copy was done */
+	};
+
+	/* hwnd is the window's HWND. nullptr if Direct3D 11 can't be set up.
+	 * zeroCopy: use the Direct3D 12 copy where it works. */
+	[[nodiscard]] static std::unique_ptr<SdlD3D11Presenter> create(void* hwnd, bool vsync,
+	                                                                bool zeroCopy);
 
 	SdlD3D11Presenter(const SdlD3D11Presenter& other) = delete;
 	SdlD3D11Presenter(SdlD3D11Presenter&& other) = delete;
@@ -56,9 +79,9 @@ class SdlD3D11Presenter
 	void setMapping(SDL_Point offset, SDL_FPoint scale);
 
 	/* Copy rects (surface coordinates; empty = everything) out of the surface.
-	 * bytes, if given, receives the amount copied. */
+	 * The surface is not read any more once this returns. */
 	[[nodiscard]] bool upload(SDL_Surface* surface, const std::vector<SDL_Rect>& rects,
-	                          Uint64* bytes = nullptr);
+	                          UploadInfo* info = nullptr);
 
 	/* A Win32 HANDLE, signalled when the swap chain takes another frame. Every
 	 * present() has to be preceded by one successful wait on it. */

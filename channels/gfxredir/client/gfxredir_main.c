@@ -56,12 +56,15 @@ typedef struct
 	 * /wslgsharedmemorypath. Without it we cannot map a pool at all. */
 	char* sharedMemoryPath;
 
-	/* The single pool the server has open, if any. Mapped but not yet used for
-	 * anything -- presentation still has to be built on top. */
+	/* The single pool the server has open, if any. poolSerial counts the
+	 * mappings, so a reader can tell a new pool from an old one even when the
+	 * id, handle or address repeat. */
 	UINT64 poolId;
 	HANDLE poolMapping;
+	BOOL poolWritable; /* poolMapping was opened with FILE_MAP_ALL_ACCESS */
 	void* poolAddr;
 	UINT64 poolSize;
+	UINT64 poolSerial;
 
 	GFXREDIR_BUFFER buffers[GFXREDIR_MAX_BUFFERS];
 } GFXREDIR_PLUGIN;
@@ -371,6 +374,9 @@ static BOOL gfxredir_get_buffer_mapping(GfxRedirClientContext* context, UINT64 b
 	mapping->width = desc->width;
 	mapping->height = desc->height;
 	mapping->format = desc->format;
+	mapping->section = gfxredir->poolWritable ? gfxredir->poolMapping : nullptr;
+	mapping->offset = desc->offset;
+	mapping->poolSerial = gfxredir->poolSerial;
 	return TRUE;
 }
 
@@ -391,6 +397,7 @@ static void gfxredir_unmap_pool(GFXREDIR_PLUGIN* gfxredir)
 
 	gfxredir->poolId = 0;
 	gfxredir->poolSize = 0;
+	gfxredir->poolWritable = FALSE;
 }
 
 /**
@@ -398,7 +405,9 @@ static void gfxredir_unmap_pool(GFXREDIR_PLUGIN* gfxredir)
  * section's own name; it lives under the namespace passed on the command line
  * as /wslgsharedmemorypath.
  *
- * Nothing reads the mapping yet -- this only proves we can reach the memory.
+ * The handle is opened with full access when allowed: Direct3D 12 only
+ * opens a section as a heap with that (OpenExistingHeapFromFileMapping fails
+ * with E_INVALIDARG otherwise). Our own view stays read-only.
  */
 static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POOL_PDU* pdu)
 {
@@ -430,7 +439,10 @@ static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POO
 		goto out;
 	}
 
-	gfxredir->poolMapping = OpenFileMappingA(FILE_MAP_READ, FALSE, fullName);
+	gfxredir->poolMapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, fullName);
+	gfxredir->poolWritable = (gfxredir->poolMapping != nullptr);
+	if (!gfxredir->poolMapping)
+		gfxredir->poolMapping = OpenFileMappingA(FILE_MAP_READ, FALSE, fullName);
 	if (!gfxredir->poolMapping)
 	{
 		WLog_ERR(TAG, "OpenFileMapping(\"%s\") failed with 0x%08" PRIx32, fullName,
@@ -457,8 +469,10 @@ static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POO
 
 	gfxredir->poolId = pdu->poolId;
 	gfxredir->poolSize = pdu->poolSize;
-	WLog_INFO(TAG, "mapped pool %" PRIu64 " \"%s\" (%" PRIu64 " bytes) at %p", pdu->poolId,
-	          fullName, pdu->poolSize, gfxredir->poolAddr);
+	gfxredir->poolSerial++;
+	WLog_INFO(TAG, "mapped pool %" PRIu64 " \"%s\" (%" PRIu64 " bytes) at %p%s", pdu->poolId,
+	          fullName, pdu->poolSize, gfxredir->poolAddr,
+	          gfxredir->poolWritable ? "" : ", read-only handle");
 
 out:
 	free(sectionName);

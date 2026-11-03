@@ -19,6 +19,7 @@
  */
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,6 +67,13 @@ class SdlWindow
 	 * drawn to from the context's render thread. */
 	static void setPresenter(bool enable);
 	[[nodiscard]] static bool presenterEnabled();
+
+	/* /sdl-zero-copy (Windows, on by default): let the presenter copy
+	 * gfxredir frames on the GPU straight out of the shared memory, through
+	 * Direct3D 12. Off, or where that is not possible, the CPU copies them
+	 * into a staging texture. Process wide, set before any window exists. */
+	static void setZeroCopy(bool enable);
+	[[nodiscard]] static bool zeroCopyEnabled();
 	[[nodiscard]] bool hasPresenter() const;
 
 	/* For the render thread. presentHandle() is a Win32 HANDLE to wait on
@@ -222,6 +230,17 @@ class SdlWindow
 	Uint64 _statsFrames = 0;      /* presents */
 	Uint64 _statsBlits = 0;       /* SDL_UpdateTexture calls */
 	Uint64 _statsBytes = 0;       /* bytes handed to SDL_UpdateTexture */
+	/* Presenter uploads by how they were copied: [0] by the CPU into staging,
+	 * [1] zero copy. busy is the time in upload() minus waitNS, the time it
+	 * blocked on the GPU copy. */
+	struct UploadStat
+	{
+		Uint64 count = 0;
+		Uint64 bytes = 0;
+		Uint64 busyNS = 0;
+		Uint64 waitNS = 0;
+	};
+	std::array<UploadStat, 2> _statsUploads{};
 	std::vector<std::string> _statsText; /* last formatted result, redrawn every frame */
 
 	std::unique_ptr<SdlD3D11Presenter> _presenter;
