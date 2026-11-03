@@ -60,7 +60,6 @@ class SdlD3D11Presenter
 	{
 		Uint64 bytes = 0;     /* copied */
 		bool zeroCopy = false; /* by the GPU, straight from the section */
-		Uint64 waitNS = 0;    /* blocked until the GPU copy was done */
 	};
 
 	/* hwnd is the window's HWND. nullptr if Direct3D 11 can't be set up.
@@ -79,13 +78,20 @@ class SdlD3D11Presenter
 	void setMapping(SDL_Point offset, SDL_FPoint scale);
 
 	/* Copy rects (surface coordinates; empty = everything) out of the surface.
-	 * The surface is not read any more once this returns. */
+	 * A zero copy may still be reading it when this returns, see
+	 * copyPending(). */
 	[[nodiscard]] bool upload(SDL_Surface* surface, const std::vector<SDL_Rect>& rects,
 	                          UploadInfo* info = nullptr);
 
 	/* A Win32 HANDLE, signalled when the swap chain takes another frame. Every
 	 * present() has to be preceded by one successful wait on it. */
 	[[nodiscard]] void* waitHandle() const;
+
+	/* True while a zero copy is still reading its surface. copyHandle() is a
+	 * Win32 event, set when the newest copy is done; nullptr without zero
+	 * copy. */
+	[[nodiscard]] bool copyPending() const;
+	[[nodiscard]] void* copyHandle() const;
 
 	/* Draw the desktop to the back buffer; then hand it to the compositor.
 	 * Neither waits for vsync. */

@@ -2023,6 +2023,27 @@ void SdlContext::renderThreadMain()
 #if defined(_WIN32)
 	std::vector<HANDLE> handles;
 	std::vector<SdlWindow*> waiting;
+	/* Uploads happened whose superseded gfxredir buffers are not acked yet,
+	 * because a zero copy may still be reading them. */
+	bool ackOwed = false;
+	const auto copiesPending = [this]
+	{
+		for (auto& window : _windows)
+		{
+			if (window.second.copyPending())
+				return true;
+		}
+		return false;
+	};
+	const auto ackIfCopied = [&]
+	{
+		if (!ackOwed || copiesPending())
+			return;
+		ackOwed = false;
+		const auto ackStart = SDL_GetTicksNS();
+		gfxRedirCompletePresent();
+		SdlWindow::addStat(SdlWindow::STAT_ACK, SDL_GetTicksNS() - ackStart);
+	};
 
 	while (!_renderStop)
 	{
@@ -2043,12 +2064,20 @@ void SdlContext::renderThreadMain()
 				waiting.push_back(&w);
 			}
 		}
+		/* After the present handles, so their indices stay as they are. */
+		for (auto& window : _windows)
+		{
+			auto& w = window.second;
+			if (ackOwed && w.copyPending() && w.copyHandle() &&
+			    (handles.size() < MAXIMUM_WAIT_OBJECTS))
+				handles.push_back(w.copyHandle());
+		}
 
 		const auto rc = WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(),
 		                                       FALSE, 1000);
 		if (_renderStop)
 			break;
-		if ((rc > WAIT_OBJECT_0) && (rc < WAIT_OBJECT_0 + handles.size()))
+		if ((rc > WAIT_OBJECT_0) && (rc < WAIT_OBJECT_0 + 1 + waiting.size()))
 			waiting[rc - WAIT_OBJECT_0 - 1]->presentSlot();
 		else if (rc == WAIT_FAILED)
 		{
@@ -2075,11 +2104,11 @@ void SdlContext::renderThreadMain()
 				WLog_Print(getWLog(), WLOG_ERROR, "render thread: upload failed");
 
 			/* The uploads were the last read of the superseded gfxredir
-			 * buffers, so hand them back before waiting for the display. */
-			const auto ackStart = SDL_GetTicksNS();
-			gfxRedirCompletePresent();
-			SdlWindow::addStat(SdlWindow::STAT_ACK, SDL_GetTicksNS() - ackStart);
+			 * buffers, so hand them back before waiting for the display:
+			 * now, or once the zero copies are done. */
+			ackOwed = true;
 		}
+		ackIfCopied();
 
 		for (auto& window : _windows)
 		{

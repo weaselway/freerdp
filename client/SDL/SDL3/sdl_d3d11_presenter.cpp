@@ -217,12 +217,18 @@ struct SdlD3D11Presenter::Impl
 	ComPtr<ID3D11DeviceContext4> context4;
 	ComPtr<ID3D12Device3> d12;
 	ComPtr<ID3D12CommandQueue> queue;
-	ComPtr<ID3D12CommandAllocator> allocator;
+	/* One per copy in flight; slotValue is the fence value that ends its
+	 * copy. */
+	static constexpr size_t allocatorCount = 3;
+	std::array<ComPtr<ID3D12CommandAllocator>, allocatorCount> allocators;
+	std::array<UINT64, allocatorCount> slotValue{};
+	size_t slotNext = 0;
 	ComPtr<ID3D12GraphicsCommandList> list;
 	ComPtr<ID3D12Fence> fence;
 	ComPtr<ID3D11Fence> fence11;
 	UINT64 fenceValue = 0;
-	HANDLE fenceEvent = nullptr;
+	UINT64 copyValue = 0;          /* fenceValue once the newest copy is done */
+	HANDLE fenceEvent = nullptr;   /* set when copyValue is reached */
 	ComPtr<ID3D12Resource> frame12;
 	/* The section as a heap, and a buffer over all of it to copy from. */
 	ComPtr<ID3D12Heap> poolHeap;
@@ -246,9 +252,10 @@ struct SdlD3D11Presenter::Impl
 
 	bool initZeroCopy(IDXGIAdapter* adapter);
 	void releaseZeroCopy();
+	void waitCopies();
 	void disableZeroCopy(HRESULT hr, const char* what);
 	bool copyFromPool(void* section, Uint64 serial, Uint64 offset, int pitch,
-	                  const std::vector<SDL_Rect>& rects, Uint64& waitNS);
+	                  const std::vector<SDL_Rect>& rects);
 };
 
 bool SdlD3D11Presenter::Impl::initZeroCopy(IDXGIAdapter* adapter)
@@ -272,13 +279,6 @@ bool SdlD3D11Presenter::Impl::initZeroCopy(IDXGIAdapter* adapter)
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	if (failed(d12->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(queue.put())),
 	           "CreateCommandQueue") ||
-	    failed(d12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-	                                       IID_PPV_ARGS(allocator.put())),
-	           "CreateCommandAllocator") ||
-	    failed(d12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr,
-	                                  IID_PPV_ARGS(list.put())),
-	           "CreateCommandList") ||
-	    failed(list->Close(), "Close") ||
 	    failed(d12->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(fence.put())),
 	           "CreateFence"))
 		return false;
@@ -292,13 +292,38 @@ bool SdlD3D11Presenter::Impl::initZeroCopy(IDXGIAdapter* adapter)
 	if (failed(hr, "OpenSharedFence"))
 		return false;
 
+	for (auto& allocator : allocators)
+	{
+		if (failed(d12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+		                                       IID_PPV_ARGS(allocator.put())),
+		           "CreateCommandAllocator"))
+			return false;
+	}
+	if (failed(d12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[0].get(),
+	                                  nullptr, IID_PPV_ARGS(list.put())),
+	           "CreateCommandList") ||
+	    failed(list->Close(), "Close"))
+		return false;
+
 	fenceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
 	fenceValue = 0;
+	copyValue = 0;
+	slotValue.fill(0);
+	slotNext = 0;
 	return fenceEvent != nullptr;
+}
+
+/* Resources may only go once the GPU is done with them. A removed device
+ * completes every value, so this does not hang on one. */
+void SdlD3D11Presenter::Impl::waitCopies()
+{
+	if (fence && (fence->GetCompletedValue() < fenceValue))
+		(void)fence->SetEventOnCompletion(fenceValue, nullptr);
 }
 
 void SdlD3D11Presenter::Impl::releaseZeroCopy()
 {
+	waitCopies();
 	zeroCopy = false;
 	poolBuffer.reset();
 	poolHeap.reset();
@@ -311,7 +336,8 @@ void SdlD3D11Presenter::Impl::releaseZeroCopy()
 	fence11.reset();
 	fence.reset();
 	list.reset();
-	allocator.reset();
+	for (auto& allocator : allocators)
+		allocator.reset();
 	queue.reset();
 	d12.reset();
 	context4.reset();
@@ -329,7 +355,7 @@ void SdlD3D11Presenter::Impl::disableZeroCopy(HRESULT hr, const char* what)
 }
 
 bool SdlD3D11Presenter::Impl::copyFromPool(void* section, Uint64 serial, Uint64 offset, int pitch,
-                                           const std::vector<SDL_Rect>& rects, Uint64& waitNS)
+                                           const std::vector<SDL_Rect>& rects)
 {
 	if (!poolHeap || (poolSection != section) || (poolSerial != serial))
 	{
@@ -365,9 +391,14 @@ bool SdlD3D11Presenter::Impl::copyFromPool(void* section, Uint64 serial, Uint64 
 		poolSerial = serial;
 	}
 
-	auto hr = allocator->Reset();
+	/* Only waits if the GPU is three copies behind. */
+	const auto slot = slotNext;
+	slotNext = (slotNext + 1) % allocatorCount;
+	if (fence->GetCompletedValue() < slotValue[slot])
+		(void)fence->SetEventOnCompletion(slotValue[slot], nullptr);
+	auto hr = allocators[slot]->Reset();
 	if (SUCCEEDED(hr))
-		hr = list->Reset(allocator.get(), nullptr);
+		hr = list->Reset(allocators[slot].get(), nullptr);
 	if (FAILED(hr))
 	{
 		disableZeroCopy(hr, "command list Reset");
@@ -414,23 +445,19 @@ bool SdlD3D11Presenter::Impl::copyFromPool(void* section, Uint64 serial, Uint64 
 	queue->Signal(fence.get(), ++fenceValue);
 	context4->Wait(fence11.get(), fenceValue);
 
-	/* The caller acks the buffer to the server after upload() returns, and the
-	 * server may write it again from then on. So wait for the copy here.
-	 * shortcut: this blocks the render thread for the GPU copy; acking from
-	 * the fence instead would overlap it, worth it if the wait shows up. */
-	const auto waitStart = SDL_GetTicksNS();
-	if (fence->GetCompletedValue() < fenceValue)
+	slotValue[slot] = fenceValue;
+	copyValue = fenceValue;
+
+	/* The caller must not ack the buffer to the server before this fires:
+	 * the server may write it again from then on. Reset first, it may still
+	 * be set from a copy nobody waited for. */
+	(void)ResetEvent(fenceEvent);
+	hr = fence->SetEventOnCompletion(copyValue, fenceEvent);
+	if (FAILED(hr))
 	{
-		hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
-		if (SUCCEEDED(hr) && (WaitForSingleObject(fenceEvent, 1000) != WAIT_OBJECT_0))
-			hr = DXGI_ERROR_WAIT_TIMEOUT;
-		if (FAILED(hr))
-		{
-			disableZeroCopy(hr, "waiting for the copy");
-			return false;
-		}
+		disableZeroCopy(hr, "SetEventOnCompletion");
+		return false;
 	}
-	waitNS = SDL_GetTicksNS() - waitStart;
 	return true;
 }
 
@@ -662,6 +689,7 @@ bool SdlD3D11Presenter::Impl::ensureFrame(int w, int h, DXGI_FORMAT format, bool
 	if (frame && (frameW == w) && (frameH == h) && (frameFormat == format))
 		return true;
 
+	waitCopies();
 	frame12.reset();
 	frameView.reset();
 	frame.reset();
@@ -795,7 +823,7 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 	for (const auto& r : clipped)
 		copied += static_cast<Uint64>(r.w) * static_cast<Uint64>(r.h) * bpp;
 	if (info)
-		*info = { copied, false, 0 };
+		*info = { copied, false };
 
 	if (_impl->zeroCopy)
 	{
@@ -814,12 +842,11 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 			_impl->warnedLayout = true;
 		}
 
-		Uint64 waitNS = 0;
 		if (section && aligned &&
-		    _impl->copyFromPool(section, serial, offset, surface->pitch, clipped, waitNS))
+		    _impl->copyFromPool(section, serial, offset, surface->pitch, clipped))
 		{
 			if (info)
-				*info = { copied, true, waitNS };
+				*info = { copied, true };
 			return true;
 		}
 		/* The device may be gone; otherwise copy this frame the old way. */
@@ -877,6 +904,16 @@ bool SdlD3D11Presenter::upload(SDL_Surface* surface, const std::vector<SDL_Rect>
 void* SdlD3D11Presenter::waitHandle() const
 {
 	return _impl->waitable;
+}
+
+bool SdlD3D11Presenter::copyPending() const
+{
+	return _impl->zeroCopy && (_impl->fence->GetCompletedValue() < _impl->copyValue);
+}
+
+void* SdlD3D11Presenter::copyHandle() const
+{
+	return _impl->zeroCopy ? _impl->fenceEvent : nullptr;
 }
 
 bool SdlD3D11Presenter::setOverlay(SDL_Surface* surface)

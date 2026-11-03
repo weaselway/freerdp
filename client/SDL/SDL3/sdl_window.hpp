@@ -80,6 +80,10 @@ class SdlWindow
 	 * before updateSurface() once presentPending() is set; presentSlot() tells
 	 * the window that wait succeeded. */
 	[[nodiscard]] void* presentHandle() const;
+	/* True while a zero copy still reads the gfxredir buffer it was given:
+	 * no acks until then. copyHandle() is a Win32 HANDLE set when it is done. */
+	[[nodiscard]] bool copyPending() const;
+	[[nodiscard]] void* copyHandle() const;
 	[[nodiscard]] bool presentPending() const;
 	[[nodiscard]] bool hasPresentSlot() const;
 	void presentSlot();
@@ -231,14 +235,12 @@ class SdlWindow
 	Uint64 _statsBlits = 0;       /* SDL_UpdateTexture calls */
 	Uint64 _statsBytes = 0;       /* bytes handed to SDL_UpdateTexture */
 	/* Presenter uploads by how they were copied: [0] by the CPU into staging,
-	 * [1] zero copy. busy is the time in upload() minus waitNS, the time it
-	 * blocked on the GPU copy. */
+	 * [1] zero copy. busy is the time spent in upload(). */
 	struct UploadStat
 	{
 		Uint64 count = 0;
 		Uint64 bytes = 0;
 		Uint64 busyNS = 0;
-		Uint64 waitNS = 0;
 	};
 	std::array<UploadStat, 2> _statsUploads{};
 	std::vector<std::string> _statsText; /* last formatted result, redrawn every frame */
