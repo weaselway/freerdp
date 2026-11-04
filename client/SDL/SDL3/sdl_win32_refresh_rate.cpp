@@ -21,6 +21,8 @@
 #include <cwchar>
 #include <vector>
 
+#include <dwmapi.h>
+
 /* Windows 11; older mingw headers lack it. */
 #ifndef QDC_VIRTUAL_REFRESH_RATE_AWARE
 #define QDC_VIRTUAL_REFRESH_RATE_AWARE 0x00000040
@@ -101,4 +103,20 @@ uint32_t sdl_win32_refresh_rate_mhz(HWND hwnd)
 		return mhz > UINT32_MAX ? 0 : static_cast<uint32_t>(mhz);
 	}
 	return 0;
+}
+
+int32_t sdl_win32_vblank_slack_us(int64_t qpc)
+{
+	DWM_TIMING_INFO timing = {};
+	timing.cbSize = sizeof(timing);
+	LARGE_INTEGER freq = {};
+	if (FAILED(DwmGetCompositionTimingInfo(nullptr, &timing)) ||
+	    !QueryPerformanceFrequency(&freq) || timing.qpcRefreshPeriod == 0)
+		return -1;
+
+	const auto period = static_cast<int64_t>(timing.qpcRefreshPeriod);
+	auto phase = (qpc - static_cast<int64_t>(timing.qpcVBlank)) % period;
+	if (phase < 0)
+		phase += period;
+	return static_cast<int32_t>((period - phase) * 1000000 / freq.QuadPart);
 }

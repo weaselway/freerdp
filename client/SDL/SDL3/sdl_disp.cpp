@@ -348,6 +348,7 @@ bool sdlDispContext::updateMonitors(SDL_EventType type, SDL_DisplayID displayID)
 void sdlDispContext::initRefreshRate(WwDisplayClientContext* ww)
 {
 	_ww = ww;
+	SdlWindow::setPresentTimingChannel(ww);
 	/* Called on the channel's thread once the server opened it; the window
 	 * is the SDL thread's. */
 	if (!SDL_RunOnMainThread([](void* self)
@@ -359,6 +360,7 @@ void sdlDispContext::initRefreshRate(WwDisplayClientContext* ww)
 void sdlDispContext::uninitRefreshRate()
 {
 	_ww = nullptr;
+	SdlWindow::setPresentTimingChannel(nullptr);
 }
 
 /* The plugin drops repeats and holds the rate until the server opens the
