@@ -27,6 +27,7 @@
 #include <SDL3/SDL.h>
 
 #include <freerdp/settings_types.h>
+#include <freerdp/client/wwdisplay.h>
 
 class SdlD3D11Presenter;
 
@@ -147,6 +148,10 @@ class SdlWindow
 	 * the vsync wait out of the frame path, to tell it apart from real work. */
 	static void setVSync(bool enable);
 
+	/* Where presented frames land relative to the monitor's vblank goes to
+	 * weaselwayd through this channel, while it is set. Process wide. */
+	static void setPresentTimingChannel(WwDisplayClientContext* ww);
+
 	/* /sdl-stats-log:<file>: append the overlay's lines to a file. The console
 	 * is released at startup unless it was inherited from a Windows shell, so
 	 * stderr goes nowhere when started from WSL. Turns the stats on. */
@@ -223,6 +228,7 @@ class SdlWindow
 	[[nodiscard]] bool presenterUpload(SDL_Surface* surface, SDL_Point offset,
 	                                   const SDL_FPoint& scale, const std::vector<SDL_Rect>& rects);
 	void presenterPresent();
+	void recordPresentTiming();
 
 	/* Regions blitted since the last present, in render-target coordinates.
 	 * Only collected when showDamage() is on. */
@@ -249,6 +255,10 @@ class SdlWindow
 	bool _presentPending = false; /* uploaded, not presented yet */
 	bool _presentSlot = false;    /* the swap chain will take a frame */
 	Uint64 _presentPendingSince = 0;
+	Sint64 _presentPendingQpc = 0; /* QueryPerformanceCounter() at the same time */
+	/* For recordPresentTiming(): vblank slack per frame since _timingSince. */
+	std::vector<Sint32> _timingSlackUs;
+	Uint64 _timingSince = 0;
 
 	SDL_Window* _window = nullptr;
 	SDL_Renderer* _renderer = nullptr;

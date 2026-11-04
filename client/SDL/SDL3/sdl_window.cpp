@@ -32,6 +32,7 @@
 
 #if defined(_WIN32)
 #include "sdl_d3d11_presenter.hpp"
+#include "sdl_win32_refresh_rate.hpp"
 #else
 /* Never created, but the window holds a pointer to one. */
 class SdlD3D11Presenter
@@ -115,6 +116,8 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 SdlWindow::SdlWindow(SdlWindow&& other) noexcept
     : _presenter(std::move(other._presenter)), _presentPending(other._presentPending),
       _presentSlot(other._presentSlot), _presentPendingSince(other._presentPendingSince),
+      _presentPendingQpc(other._presentPendingQpc),
+      _timingSlackUs(std::move(other._timingSlackUs)), _timingSince(other._timingSince),
       _window(other._window), _renderer(other._renderer), _renderTarget(other._renderTarget),
       _gdiTexture(other._gdiTexture), _gdiTextureW(other._gdiTextureW),
       _gdiTextureH(other._gdiTextureH), _initialW(other._initialW), _initialH(other._initialH),
@@ -402,7 +405,12 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 	_gdiTextureH = surface->h;
 
 	if (!_presentPending)
+	{
 		_presentPendingSince = now;
+		LARGE_INTEGER qpc = {};
+		(void)QueryPerformanceCounter(&qpc);
+		_presentPendingQpc = qpc.QuadPart;
+	}
 	_presentPending = true;
 	return true;
 #else
@@ -860,6 +868,7 @@ void SdlWindow::presenterPresent()
 
 	if (!_presenter->present())
 		return;
+	recordPresentTiming();
 
 	if (showStats())
 	{
@@ -873,6 +882,57 @@ void SdlWindow::presenterPresent()
 		if (updateStats())
 			updatePresenterOverlay();
 	}
+#endif
+}
+
+static std::atomic<WwDisplayClientContext*> s_presentTiming = nullptr;
+
+void SdlWindow::setPresentTimingChannel(WwDisplayClientContext* ww)
+{
+	s_presentTiming = ww;
+}
+
+/* weaselwayd moves the guest's vblank so that frames are ready a few ms
+ * before the monitor's. It gets the late tail, the 10th percentile, about
+ * twice a second. Without vsync there is no vblank to line up with. */
+void SdlWindow::recordPresentTiming()
+{
+#if defined(_WIN32)
+	auto ww = s_presentTiming.load();
+	if (!ww || !s_vsync)
+		return;
+	const auto slack = sdl_win32_vblank_slack_us(_presentPendingQpc);
+	if (slack < 0)
+		return;
+
+	const auto now = SDL_GetTicksNS();
+	if (_timingSince == 0)
+		_timingSince = now;
+	_timingSlackUs.push_back(slack);
+	if (now - _timingSince < 500000000ull)
+		return;
+
+	/* A few frames after a pause say little. */
+	auto& v = _timingSlackUs;
+	if (v.size() >= 10)
+	{
+		const auto pct = [&v](size_t p)
+		{
+			auto it = v.begin() + static_cast<std::ptrdiff_t>(v.size() * p / 100);
+			std::nth_element(v.begin(), it, v.end());
+			return *it;
+		};
+		const auto p10 = pct(10);
+		const auto p50 = pct(50);
+		const auto p90 = pct(90);
+		const auto frames = static_cast<UINT32>(v.size());
+		const auto rc = ww->SendPresentTiming(ww, frames, p10);
+		if (s_statsLog)
+			(void)fprintf(s_statsLog, "[timing] %u frames  slack p10/50/90 %d/%d/%d us  rc %u\n",
+			              frames, p10, p50, p90, rc);
+	}
+	v.clear();
+	_timingSince = now;
 #endif
 }
 
