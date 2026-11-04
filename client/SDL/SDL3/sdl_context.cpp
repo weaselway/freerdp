@@ -2064,11 +2064,13 @@ void SdlContext::renderThreadMain()
 				waiting.push_back(&w);
 			}
 		}
-		/* After the present handles, so their indices stay as they are. */
+		/* After the present handles, so their indices stay as they are. Not
+		 * only while the copy is pending: if it finished since ackIfCopied()
+		 * looked, its event is set and is what gets the ack out now. */
 		for (auto& window : _windows)
 		{
 			auto& w = window.second;
-			if (ackOwed && w.copyPending() && w.copyHandle() &&
+			if (ackOwed && w.copyHandle() &&
 			    (handles.size() < MAXIMUM_WAIT_OBJECTS))
 				handles.push_back(w.copyHandle());
 		}
