@@ -31,12 +31,18 @@ extern "C"
 	 * otherwise it goes out when the server does. 0 is not sent. */
 	typedef UINT (*pcWwDisplaySetRefreshRate)(WwDisplayClientContext* context, UINT32 refresh_mhz);
 
+	/* Sends WWDISPLAY_PDU_PRESENT_TIMING if the server has the channel open;
+	 * otherwise it is dropped. */
+	typedef UINT (*pcWwDisplaySendPresentTiming)(WwDisplayClientContext* context, UINT32 frames,
+	                                             INT32 slack_us);
+
 	struct s_wwdisplay_client_context
 	{
 		void* handle;
 		void* custom;
 
 		pcWwDisplaySetRefreshRate SetRefreshRate;
+		pcWwDisplaySendPresentTiming SendPresentTiming;
 	};
 
 #ifdef __cplusplus

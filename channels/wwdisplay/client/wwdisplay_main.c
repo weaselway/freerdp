@@ -114,6 +114,29 @@ static UINT wwdisplay_set_refresh_rate(WwDisplayClientContext* context, UINT32 r
 	return rc;
 }
 
+static UINT wwdisplay_send_present_timing(WwDisplayClientContext* context, UINT32 frames,
+                                          INT32 slack_us)
+{
+	WINPR_ASSERT(context);
+	WWDISPLAY_PLUGIN* ww = (WWDISPLAY_PLUGIN*)context->handle;
+	WINPR_ASSERT(ww);
+
+	BYTE pdu[12];
+	wStream sbuffer = WINPR_C_ARRAY_INIT;
+	wStream* s = Stream_StaticInit(&sbuffer, pdu, sizeof(pdu));
+	Stream_Write_UINT16(s, WWDISPLAY_PDU_PRESENT_TIMING);
+	Stream_Write_UINT16(s, 0);
+	Stream_Write_UINT32(s, frames);
+	Stream_Write_INT32(s, slack_us);
+
+	UINT rc = CHANNEL_RC_OK;
+	EnterCriticalSection(&ww->lock);
+	if (ww->channel)
+		rc = ww->channel->Write(ww->channel, sizeof(pdu), pdu, nullptr);
+	LeaveCriticalSection(&ww->lock);
+	return rc;
+}
+
 static UINT wwdisplay_plugin_initialize(GENERIC_DYNVC_PLUGIN* base,
                                         WINPR_ATTR_UNUSED rdpContext* rcontext,
                                         WINPR_ATTR_UNUSED rdpSettings* settings)
@@ -134,6 +157,7 @@ static UINT wwdisplay_plugin_initialize(GENERIC_DYNVC_PLUGIN* base,
 
 	context->handle = ww;
 	context->SetRefreshRate = wwdisplay_set_refresh_rate;
+	context->SendPresentTiming = wwdisplay_send_present_timing;
 	ww->base.iface.pInterface = ww->context = context;
 	return CHANNEL_RC_OK;
 }
