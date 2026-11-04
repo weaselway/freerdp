@@ -24,9 +24,3 @@
 /* The physical refresh rate in millihertz of the monitor @hwnd is on: the
  * highest it runs at with dynamic refresh rate or VRR. 0 if unknown. */
 [[nodiscard]] uint32_t sdl_win32_refresh_rate_mhz(HWND hwnd);
-
-/* How long after the QueryPerformanceCounter() time @qpc the next vblank is,
- * in microseconds, from DWM's timing. In (0, one refresh]; -1 if unknown.
- * shortcut: DWM's timing is the primary monitor's, use the window's monitor
- * once someone runs the viewer on a second one with a different clock. */
-[[nodiscard]] int32_t sdl_win32_vblank_slack_us(int64_t qpc);

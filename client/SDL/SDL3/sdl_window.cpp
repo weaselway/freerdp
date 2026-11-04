@@ -32,10 +32,13 @@
 
 #if defined(_WIN32)
 #include "sdl_d3d11_presenter.hpp"
-#include "sdl_win32_refresh_rate.hpp"
+#include "sdl_win32_vblank.hpp"
 #else
-/* Never created, but the window holds a pointer to one. */
+/* Never created, but the window holds pointers to them. */
 class SdlD3D11Presenter
+{
+};
+class SdlWin32VBlank
 {
 };
 #endif
@@ -116,7 +119,7 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 SdlWindow::SdlWindow(SdlWindow&& other) noexcept
     : _presenter(std::move(other._presenter)), _presentPending(other._presentPending),
       _presentSlot(other._presentSlot), _presentPendingSince(other._presentPendingSince),
-      _presentPendingQpc(other._presentPendingQpc),
+      _presentPendingQpc(other._presentPendingQpc), _vblank(std::move(other._vblank)),
       _timingSlackUs(std::move(other._timingSlackUs)), _timingSince(other._timingSince),
       _window(other._window), _renderer(other._renderer), _renderTarget(other._renderTarget),
       _gdiTexture(other._gdiTexture), _gdiTextureW(other._gdiTextureW),
@@ -134,6 +137,7 @@ SdlWindow::~SdlWindow()
 {
 	/* Before the window it draws to. */
 	_presenter.reset();
+	_vblank.reset();
 	if (_gdiTexture)
 		SDL_DestroyTexture(_gdiTexture);
 	if (_renderTarget)
@@ -901,7 +905,15 @@ void SdlWindow::recordPresentTiming()
 	auto ww = s_presentTiming.load();
 	if (!ww || !s_vsync)
 		return;
-	const auto slack = sdl_win32_vblank_slack_us(_presentPendingQpc);
+	if (!_vblank)
+	{
+		auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(
+		    SDL_GetWindowProperties(_window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+		if (!hwnd)
+			return;
+		_vblank = std::make_unique<SdlWin32VBlank>(hwnd);
+	}
+	const auto slack = _vblank->slackUs(_presentPendingQpc);
 	if (slack < 0)
 		return;
 
