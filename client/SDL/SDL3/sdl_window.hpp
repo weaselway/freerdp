@@ -30,6 +30,7 @@
 #include <freerdp/client/wwdisplay.h>
 
 class SdlD3D11Presenter;
+class SdlWin32VBlank;
 
 class SdlWindow
 {
@@ -256,7 +257,9 @@ class SdlWindow
 	bool _presentSlot = false;    /* the swap chain will take a frame */
 	Uint64 _presentPendingSince = 0;
 	Sint64 _presentPendingQpc = 0; /* QueryPerformanceCounter() at the same time */
-	/* For recordPresentTiming(): vblank slack per frame since _timingSince. */
+	/* For recordPresentTiming(): the monitor's vblank, once needed, and the
+	 * slack per frame since _timingSince. */
+	std::unique_ptr<SdlWin32VBlank> _vblank;
 	std::vector<Sint32> _timingSlackUs;
 	Uint64 _timingSince = 0;
 
