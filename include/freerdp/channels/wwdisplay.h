@@ -31,10 +31,17 @@
  * WWDISPLAY_PDU_REFRESH_RATE: UINT32 refresh rate in millihertz. The
  * physical rate of the monitor, the highest it runs at with variable or
  * dynamic refresh rate. Sent when the channel opens and when it changes.
+ *
+ * WWDISPLAY_PDU_PRESENT_TIMING: UINT32 frames, INT32 slack in microseconds.
+ * How long before the monitor's next vblank the frames were ready to be
+ * shown, the 10th percentile over the last @frames frames; negative if they
+ * were ready after it. Sent about twice a second while frames arrive and the
+ * client waits for vblank, so the server can move its frames in time.
  */
 #define WWDISPLAY_CHANNEL_NAME "wwdisplay"
 #define WWDISPLAY_DVC_CHANNEL_NAME "Weaselway::Display"
 
 #define WWDISPLAY_PDU_REFRESH_RATE 1
+#define WWDISPLAY_PDU_PRESENT_TIMING 2
 
 #endif /* FREERDP_CHANNEL_WWDISPLAY_H */
