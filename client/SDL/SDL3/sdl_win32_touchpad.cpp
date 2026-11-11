@@ -708,11 +708,58 @@ namespace
 		endGesture("no reports");
 	}
 
+	/* Windows makes its touchpad gestures of injected keys, and the arrows
+	 * among them carry the numpad's scan code without the extended flag. SDL
+	 * goes by the scan code, so with Num Lock on the session typed 8, 4 and 6
+	 * on a swipe. With Num Lock on, a real numpad key is VK_NUMPAD* (or, with
+	 * Shift, the navigation key Windows makes of it), so a navigation VK on a
+	 * numpad scan code means the navigation key. */
+	void fixNavigationKey(MSG* msg)
+	{
+		switch (msg->message)
+		{
+			case WM_KEYDOWN:
+			case WM_KEYUP:
+			case WM_SYSKEYDOWN:
+			case WM_SYSKEYUP:
+				break;
+			default:
+				return;
+		}
+
+		switch (msg->wParam)
+		{
+			case VK_UP:
+			case VK_DOWN:
+			case VK_LEFT:
+			case VK_RIGHT:
+			case VK_HOME:
+			case VK_END:
+			case VK_PRIOR:
+			case VK_NEXT:
+			case VK_INSERT:
+			case VK_DELETE:
+				break;
+			default:
+				return;
+		}
+
+		/* With Num Lock off, the real numpad sends these VKs on its own scan
+		 * codes, and it has to stay the numpad. */
+		if ((GetKeyState(VK_NUMLOCK) & 1) == 0)
+			return;
+
+		msg->lParam |= static_cast<LPARAM>(KF_EXTENDED) << 16;
+	}
+
 	bool SDLCALL sdl_win32_raw_input_hook(void* userdata, MSG* msg)
 	{
 		(void)userdata;
 
 		finalizeStaleGesture();
+
+		if (msg)
+			fixNavigationKey(msg);
 
 		if (!msg || (msg->message != WM_INPUT))
 			return true;
