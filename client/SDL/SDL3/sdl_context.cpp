@@ -52,6 +52,7 @@ static constexpr auto sdl_presenter = "sdl-presenter";
 static constexpr auto sdl_zero_copy = "sdl-zero-copy";
 static constexpr auto sdl_stats_log = "sdl-stats-log";
 static constexpr auto sdl_touchpad_gestures = "sdl-touchpad-gestures";
+static constexpr auto sdl_touchpad_raw = "sdl-touchpad-raw";
 
 SdlContext::SdlContext(rdpContext* context)
     : _context(context), _log(WLog_Get(CLIENT_TAG("SDL"))), _cursor(nullptr, sdl_Pointer_FreeCopy),
@@ -108,6 +109,10 @@ SdlContext::SdlContext(rdpContext* context)
 	_args.push_back({ sdl_touchpad_gestures, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
 	                  nullptr, -1, nullptr,
 	                  "Forward 3+ finger touchpad gestures as touch input (Windows)" });
+	_args.push_back({ sdl_touchpad_raw, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr,
+	                  -1, nullptr,
+	                  "Forward every touchpad contact as touch input, for the server to move "
+	                  "its pointer with (Windows)" });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -1293,6 +1298,10 @@ bool SdlContext::moveMouseTo(const SDL_FPoint& pos)
 
 	const auto id = SDL_GetWindowID(window);
 	const auto spos = pixelToScreen(id, pos);
+#if defined(_WIN32)
+	if (sdl::win32::touchpad::moveCursor(window, spos.x, spos.y))
+		return true;
+#endif
 	SDL_WarpMouseInWindow(window, spos.x, spos.y);
 	return true;
 }
@@ -1811,6 +1820,11 @@ bool SdlContext::handleEvent(const SDL_Event& ev)
 	if (!isConnected())
 		return true;
 
+#if defined(_WIN32)
+	if (sdl::win32::touchpad::dropsMouseEvent(ev))
+		return true;
+#endif
+
 	switch (ev.type)
 	{
 		case SDL_EVENT_FINGER_DOWN:
@@ -1855,7 +1869,12 @@ bool SdlContext::handleEvent(const SDL_Event& ev)
 
 bool SdlContext::touchpadGestures() const
 {
-	return _touchpadGestures;
+	return _touchpadGestures || _touchpadRaw;
+}
+
+bool SdlContext::touchpadRaw() const
+{
+	return _touchpadRaw;
 }
 
 COMMAND_LINE_ARGUMENT_A* SdlContext::args()
@@ -1933,6 +1952,10 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		else if (strcmp(arg->Name, sdl_touchpad_gestures) == 0)
 		{
 			sdl->_touchpadGestures = arg->Value != nullptr;
+		}
+		else if (strcmp(arg->Name, sdl_touchpad_raw) == 0)
+		{
+			sdl->_touchpadRaw = arg->Value != nullptr;
 		}
 		else if (strcmp(arg->Name, sdl_show_stats) == 0)
 		{

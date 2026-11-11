@@ -50,6 +50,9 @@
 #ifndef HID_USAGE_DIGITIZER_TOUCH_PAD
 #define HID_USAGE_DIGITIZER_TOUCH_PAD static_cast<USHORT>(0x05)
 #endif
+#ifndef HID_USAGE_PAGE_BUTTON
+#define HID_USAGE_PAGE_BUTTON static_cast<USHORT>(0x09)
+#endif
 
 /* Not provided by any standard SDK header; values from the USB HID Usage
  * Tables "Digitizers" page (0x0D), also used by Microsoft's Windows
@@ -65,6 +68,8 @@ namespace digitizer
 namespace
 {
 	constexpr SDL_TouchID kSyntheticTouchpadTouchID = 0x4652445054504144ULL; /* "FRDPTPAD" */
+	/* The pad's button, sent as a mouse button of its own. */
+	constexpr SDL_MouseID kSyntheticTouchpadMouseID = 0x54504144; /* "TPAD" */
 	constexpr Uint64 kFingerIdBias = 0x40000000ULL;
 
 	/* Where in a report's Finger sub-collection to find this finger's fields,
@@ -105,6 +110,11 @@ namespace
 		 * decodeReport(). */
 		bool hasContactCount = false;
 		USHORT contactCountLinkCollection = 0;
+
+		/* Button 1, the pad's own button (a clickpad's surface), on the
+		 * top-level collection. */
+		bool hasButton = false;
+		USHORT buttonLinkCollection = 0;
 
 		/* Partial frame accumulated across a chain of reports, and how many
 		 * contacts of the frame the device still owes us. Per device, so a
@@ -195,6 +205,69 @@ namespace
 	 * particular), which used to leave the server with a gesture that never
 	 * ended. */
 	SDL_WindowID g_gestureWindowID = 0;
+
+	/* /sdl-touchpad-raw: forward every contact, not just gestures of three
+	 * or more. */
+	bool g_raw = false;
+
+	/* While raw contacts are forwarded, the window whose client area the
+	 * cursor is held in: Windows moves it with the same fingers, and the
+	 * server, whose pointer they move, says where it is to be. Held on for
+	 * kHoldTailMs after the last finger lifts, since the server's pointer
+	 * still moves for a frame or two after (g_holdUntil, 0 while fingers
+	 * are down). nullptr if the cursor is free. */
+	HWND g_holdWindow = nullptr;
+	Uint64 g_holdUntil = 0;
+	constexpr Uint64 kHoldTailMs = 300;
+
+	/* Not provided below WINVER 0x0603. */
+	constexpr auto kInputDeviceTouchpad = static_cast<INPUT_MESSAGE_DEVICE_TYPE>(0x10);
+
+	[[nodiscard]] HWND windowHandle(SDL_Window* window)
+	{
+		return static_cast<HWND>(SDL_GetPointerProperty(
+		    SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+	}
+
+	void holdCursorAt(POINT p)
+	{
+		const RECT r{ p.x, p.y, p.x + 1, p.y + 1 };
+		(void)ClipCursor(&r);
+	}
+
+	/* Holds the cursor where it is, if that is over the window's client area
+	 * and no button is down (its release would be dropped). Otherwise the
+	 * fingers are Windows' to handle. */
+	[[nodiscard]] bool startHold(SDL_Window* window)
+	{
+		if (g_holdWindow)
+			return true;
+
+		const HWND hwnd = windowHandle(window);
+		POINT p{};
+		RECT client{};
+		if (!hwnd || !GetCursorPos(&p) || !GetClientRect(hwnd, &client))
+			return false;
+		POINT local = p;
+		if (!ScreenToClient(hwnd, &local) || !PtInRect(&client, local))
+			return false;
+		if (SDL_GetMouseState(nullptr, nullptr) != 0)
+			return false;
+
+		holdCursorAt(p);
+		g_holdWindow = hwnd;
+		g_holdUntil = 0;
+		return true;
+	}
+
+	void endHold()
+	{
+		if (!g_holdWindow)
+			return;
+		(void)ClipCursor(nullptr);
+		g_holdWindow = nullptr;
+		g_holdUntil = 0;
+	}
 
 	[[nodiscard]] FingerField* findFinger(std::vector<FingerField>& fingers,
 	                                      USHORT linkCollection)
@@ -322,6 +395,14 @@ namespace
 					const USAGE usageMin = bc.IsRange ? bc.Range.UsageMin : bc.NotRange.Usage;
 					const USAGE usageMax = bc.IsRange ? bc.Range.UsageMax : bc.NotRange.Usage;
 
+					if ((bc.UsagePage == HID_USAGE_PAGE_BUTTON) && (usageMin <= 1) &&
+					    (1 <= usageMax))
+					{
+						info.hasButton = true;
+						info.buttonLinkCollection = bc.LinkCollection;
+						continue;
+					}
+
 					if ((bc.UsagePage != HID_USAGE_PAGE_DIGITIZER) ||
 					    (usageMin > digitizer::TipSwitch) || (digitizer::TipSwitch > usageMax))
 						continue;
@@ -347,9 +428,10 @@ namespace
 		}
 
 		WLog_INFO(TAG,
-		         "parsed touchpad HID descriptor: %u finger collection(s), %u usable, "
-		         "hasContactCount=%d",
-		         static_cast<unsigned>(info.fingers.size()), usable, info.hasContactCount);
+		          "parsed touchpad HID descriptor: %u finger collection(s), %u usable, "
+		          "hasContactCount=%d hasButton=%d",
+		          static_cast<unsigned>(info.fingers.size()), usable, info.hasContactCount,
+		          info.hasButton);
 
 		return usable > 0;
 	}
@@ -380,9 +462,42 @@ namespace
 		SDL_PushEvent(&ev);
 	}
 
+	/* Whether the pad's button is held, as last sent. */
+	bool g_buttonDown = false;
+
+	/* At the cursor, which is where the server's pointer is while it is held:
+	 * the server takes a left click while fingers are down for the pad's. */
+	void pushButtonEvent(bool down)
+	{
+		SDL_Window* window = SDL_GetMouseFocus();
+		if (!window)
+			return;
+
+		SDL_Event ev{};
+		ev.button.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+		ev.button.timestamp = SDL_GetTicksNS();
+		ev.button.windowID = SDL_GetWindowID(window);
+		ev.button.which = kSyntheticTouchpadMouseID;
+		ev.button.button = SDL_BUTTON_LEFT;
+		ev.button.down = down;
+		ev.button.clicks = 1;
+		(void)SDL_GetMouseState(&ev.button.x, &ev.button.y);
+		SDL_PushEvent(&ev);
+	}
+
+	void setButton(bool down)
+	{
+		if (down == g_buttonDown)
+			return;
+		g_buttonDown = down;
+		WLog_VRB(TAG, "touchpad button %s", down ? "down" : "up");
+		pushButtonEvent(down);
+	}
+
 	/* Lifts every forwarded contact where it currently is. */
 	void endGesture(const char* reason)
 	{
+		setButton(false);
 		for (const auto& entry : g_activeContacts)
 		{
 			WLog_VRB(TAG, "touchpad contact id=%" PRIu32 " event=up (%s)", entry.first, reason);
@@ -391,6 +506,8 @@ namespace
 		}
 		g_activeContacts.clear();
 		g_gestureWindowID = 0;
+		if (g_holdWindow)
+			g_holdUntil = SDL_GetTicks() + kHoldTailMs;
 	}
 
 	/* Below this many simultaneous fingers, the OS's normal touchpad-to-mouse
@@ -402,6 +519,13 @@ namespace
 	 * gestures -- which the OS doesn't otherwise do anything useful with --
 	 * get forwarded. */
 	constexpr size_t kMinContactsToForward = 3;
+
+	/* While the cursor is held, Windows does nothing with the fingers, so
+	 * every one of them is forwarded. */
+	[[nodiscard]] size_t minContactsToForward()
+	{
+		return g_holdWindow ? 1 : kMinContactsToForward;
+	}
 
 	void decodeReport(DeviceInfo& info, BYTE* report, DWORD reportLen)
 	{
@@ -545,6 +669,20 @@ namespace
 				down.push_back(c);
 		}
 
+		/* Before the contacts: the button goes up before the finger that
+		 * held it does. Down, it follows a finger that is already there. */
+		if (info.hasButton && g_holdWindow && !g_activeContacts.empty())
+		{
+			USAGE usages[16] = {};
+			ULONG count = ARRAYSIZE(usages);
+			bool pressed = false;
+			if (HidP_GetUsages(HidP_Input, HID_USAGE_PAGE_BUTTON, info.buttonLinkCollection, usages,
+			                   &count, info.preparsed, reinterpret_cast<PCHAR>(report),
+			                   reportLen) == HIDP_STATUS_SUCCESS)
+				pressed = std::find(usages, usages + count, USAGE{ 1 }) != usages + count;
+			setButton(pressed);
+		}
+
 		const bool wasForwarding = !g_activeContacts.empty();
 
 		if (!wasForwarding)
@@ -555,8 +693,11 @@ namespace
 			 * touchdown happens to be split, but that's imperceptible --
 			 * unlike losing an already-in-progress gesture, which is what
 			 * the grace period below exists to prevent. */
-			if (down.size() < kMinContactsToForward)
+			if (g_raw && !down.empty())
+				(void)startHold(focus);
+			if (down.size() < minContactsToForward())
 				return;
+			g_holdUntil = 0;
 
 			for (const auto& c : down)
 			{
@@ -634,7 +775,7 @@ namespace
 			g_activeContacts.erase(id);
 		}
 
-		if (g_activeContacts.size() < kMinContactsToForward)
+		if (g_activeContacts.size() < minContactsToForward())
 		{
 			/* Genuinely dropped below threshold: end everything, matching
 			 * the "stay silent below 3" design -- whichever fingers are
@@ -701,11 +842,33 @@ namespace
 	void finalizeStaleGesture()
 	{
 		if (g_activeContacts.empty())
+		{
+			if (g_holdUntil && (SDL_GetTicks() >= g_holdUntil))
+				endHold();
 			return;
+		}
 		if ((SDL_GetTicks() - g_lastReportTick) < kContactStaleTimeoutMs)
 			return;
 
 		endGesture("no reports");
+	}
+
+	/* Windows makes clicks of taps and the pad's button, and wheel turns of
+	 * two fingers, also after they lifted (a tap's click, the scroll's
+	 * inertia). The server makes its own of the forwarded contacts. */
+	[[nodiscard]] bool isTouchpadClickOrWheel(const MSG* msg)
+	{
+		if (!g_raw || (msg->message <= WM_MOUSEMOVE) || (msg->message > WM_MOUSEHWHEEL))
+			return false;
+		if (!SDL_GetKeyboardFocus())
+			return false;
+
+		INPUT_MESSAGE_SOURCE source{};
+		if (!GetCurrentInputMessageSource(&source) || (source.deviceType != kInputDeviceTouchpad))
+			return false;
+		WLog_DBG(TAG, "dropped Windows' mouse message 0x%04X made of the touchpad",
+		         static_cast<unsigned>(msg->message));
+		return true;
 	}
 
 	/* Windows makes its touchpad gestures of injected keys, and the arrows
@@ -761,6 +924,9 @@ namespace
 		if (msg)
 			fixNavigationKey(msg);
 
+		if (msg && isTouchpadClickOrWheel(msg))
+			return false;
+
 		if (!msg || (msg->message != WM_INPUT))
 			return true;
 
@@ -775,8 +941,10 @@ namespace sdl
 	{
 		namespace touchpad
 		{
-			bool initialize()
+			bool initialize(bool raw)
 			{
+				g_raw = raw;
+
 				RAWINPUTDEVICE rid{};
 				rid.usUsagePage = HID_USAGE_PAGE_DIGITIZER;
 				rid.usUsage = HID_USAGE_DIGITIZER_TOUCH_PAD;
@@ -806,13 +974,58 @@ namespace sdl
 					               "GetLastError=%" PRIu32,
 					          static_cast<UINT32>(GetLastError()));
 
-				WLog_INFO(TAG, "raw touchpad passthrough active (Raw Input + HID parsing)");
+				WLog_INFO(TAG, "raw touchpad passthrough active (Raw Input + HID parsing)%s",
+				          raw ? ", every contact" : "");
 				return true;
+			}
+
+			bool dropsMouseEvent(const SDL_Event& ev)
+			{
+				if (!g_holdWindow)
+					return false;
+				switch (ev.type)
+				{
+					case SDL_EVENT_MOUSE_MOTION:
+					case SDL_EVENT_MOUSE_WHEEL:
+						return true;
+					case SDL_EVENT_MOUSE_BUTTON_DOWN:
+					case SDL_EVENT_MOUSE_BUTTON_UP:
+						return ev.button.which != kSyntheticTouchpadMouseID;
+					default:
+						return false;
+				}
+			}
+
+			bool moveCursor(SDL_Window* window, float x, float y)
+			{
+				if (!g_holdWindow || (windowHandle(window) != g_holdWindow))
+					return false;
+
+				/* SDL knows how its window coordinates map to the screen;
+				 * the warp is confined like any other move, so let go first. */
+				(void)ClipCursor(nullptr);
+				SDL_WarpMouseInWindow(window, x, y);
+				POINT p{};
+				if (GetCursorPos(&p))
+					holdCursorAt(p);
+				return true;
+			}
+
+			bool toggleRaw()
+			{
+				g_raw = !g_raw;
+				if (!g_raw)
+				{
+					endGesture("raw forwarding off");
+					endHold();
+				}
+				return g_raw;
 			}
 
 			void cancelGesture()
 			{
 				endGesture("focus lost");
+				endHold();
 			}
 
 			void shutdown()
@@ -828,6 +1041,8 @@ namespace sdl
 				g_devices.clear();
 				g_activeContacts.clear();
 				g_gestureWindowID = 0;
+				g_buttonDown = false;
+				endHold();
 
 				RAWINPUTDEVICE rid{};
 				rid.usUsagePage = HID_USAGE_PAGE_DIGITIZER;

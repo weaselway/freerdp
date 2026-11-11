@@ -146,6 +146,9 @@ class SdlContext
 	 * turns such contacts back into gestures (weaselway's mutter) wants
 	 * them. */
 	[[nodiscard]] bool touchpadGestures() const;
+	/* /sdl-touchpad-raw: forward every contact, and the server moves its
+	 * pointer, taps and scrolls with them too. Implies touchpadGestures(). */
+	[[nodiscard]] bool touchpadRaw() const;
 
 	[[nodiscard]] int start();
 	[[nodiscard]] int join();
@@ -377,4 +380,5 @@ class SdlContext
 	std::vector<rdpPointer*> _valid_pointers;
 	bool _credentialsRead = false;
 	bool _touchpadGestures = false;
+	bool _touchpadRaw = false;
 };

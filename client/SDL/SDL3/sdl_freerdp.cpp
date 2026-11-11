@@ -752,9 +752,15 @@ int main(int argc, char* argv[])
 #if defined(_WIN32)
 	/* Registers on this thread, which runs the SDL event loop: the gesture
 	 * watchdog timer posts to it. */
-	const bool touchpad = sdl->touchpadGestures() && sdl::win32::touchpad::initialize();
+	const bool touchpad =
+	    sdl->touchpadGestures() && sdl::win32::touchpad::initialize(sdl->touchpadRaw());
 	if (sdl->touchpadGestures() && !touchpad)
 		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
+	/* The fingers move the server's pointer, and the server says where to: without
+	 * GrabMouse the client ignores that. */
+	if (touchpad && sdl->touchpadRaw() &&
+	    !freerdp_settings_set_bool(settings, FreeRDP_GrabMouse, TRUE))
+		return -1;
 #endif
 
 	/* SDL cleanup code if the client exits */
