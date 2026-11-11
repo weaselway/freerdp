@@ -163,14 +163,13 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 #if defined(_WIN32)
 static bool s_touchpad = false;
 
-/* SDL has one hook for all of them. It never consumes a message: Raw Input is
- * a tap next to the normal mouse and keyboard messages. */
+/* SDL has one hook for all of them. Raw Input is a tap next to the normal
+ * mouse and keyboard messages; only the touchpad drops some of them. */
 static bool SDLCALL sdl_win32_message_hook(void* userdata, MSG* msg)
 {
-	if (s_touchpad)
-		sdl::win32::touchpad::handleMessage(msg);
+	const bool keep = !s_touchpad || sdl::win32::touchpad::handleMessage(msg);
 	sdl_win32_edge_push_handle(static_cast<SdlContext*>(userdata), msg);
-	return true;
+	return keep;
 }
 #endif
 
@@ -792,9 +791,15 @@ int main(int argc, char* argv[])
 #if defined(_WIN32)
 	/* Registers on this thread, which runs the SDL event loop: the gesture
 	 * watchdog timer posts to it. */
-	const bool touchpad = sdl->touchpadGestures() && sdl::win32::touchpad::initialize();
+	const bool touchpad =
+	    sdl->touchpadGestures() && sdl::win32::touchpad::initialize(sdl->touchpadRaw());
 	if (sdl->touchpadGestures() && !touchpad)
 		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
+	/* The fingers move the server's pointer, and the server says where to: without
+	 * GrabMouse the client ignores that. */
+	if (touchpad && sdl->touchpadRaw() &&
+	    !freerdp_settings_set_bool(settings, FreeRDP_GrabMouse, TRUE))
+		return -1;
 	s_touchpad = touchpad;
 	const bool edgePush = sdl_win32_edge_push_initialize();
 	SDL_SetWindowsMessageHook(sdl_win32_message_hook, sdl);

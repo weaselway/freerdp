@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <SDL3/SDL.h>
+
 struct tagMSG;
 
 namespace sdl
@@ -38,16 +40,37 @@ namespace sdl
 		 * HID report stream directly, decodes the contacts with the HidP_*
 		 * report-descriptor parser, and forwards 3+ finger gestures as
 		 * synthetic SDL finger events into the SdlTouch / RDPEI pipeline.
-		 * Enabled with /sdl-touchpad-gestures. */
+		 * Enabled with /sdl-touchpad-gestures.
+		 *
+		 * With /sdl-touchpad-raw every contact is forwarded, from the first
+		 * finger on, and the server's input stack does pointer motion, taps
+		 * and scrolling too. Windows would move its cursor and click and
+		 * scroll of the same fingers, so while they are down the cursor is
+		 * held where the server says its pointer is, and the mouse input
+		 * Windows makes of the touchpad is dropped. */
 		namespace touchpad
 		{
 			/* Registers the Raw Input device. Returns false if registration
 			 * failed. */
-			[[nodiscard]] bool initialize();
+			[[nodiscard]] bool initialize(bool raw);
 			void shutdown();
 
-			/* For each message of SDL's Windows message hook. */
-			void handleMessage(tagMSG* msg);
+			/* For each message of SDL's Windows message hook. False if the
+			 * message is Windows' click or wheel turn of forwarded contacts,
+			 * and must be dropped. */
+			[[nodiscard]] bool handleMessage(tagMSG* msg);
+
+			/* True if the mouse event is Windows' idea of the touchpad, made
+			 * while its contacts are forwarded raw, and must not be sent. */
+			[[nodiscard]] bool dropsMouseEvent(const SDL_Event& ev);
+
+			/* Moves the held cursor to @x, @y in the window's coordinates.
+			 * False if the cursor is not held, and is the caller's to move. */
+			[[nodiscard]] bool moveCursor(SDL_Window* window, float x, float y);
+
+			/* Switches between forwarding every contact and only gestures of
+			 * three or more fingers. Returns whether every one is now. */
+			bool toggleRaw();
 
 			/* Lifts all contacts of a gesture in progress. Called when the
 			 * window loses focus (Alt+Tab, Win key, ...): no further reports

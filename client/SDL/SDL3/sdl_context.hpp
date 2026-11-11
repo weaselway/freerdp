@@ -158,6 +158,9 @@ class SdlContext
 	 * turns such contacts back into gestures (weaselway's mutter) wants
 	 * them. */
 	[[nodiscard]] bool touchpadGestures() const;
+	/* /sdl-touchpad-raw: forward every contact, and the server moves its
+	 * pointer, taps and scrolls with them too. Implies touchpadGestures(). */
+	[[nodiscard]] bool touchpadRaw() const;
 
 	/* /sdl-windows:<n>: the desktop is n monitors side by side, each in a
 	 * window of its own. 0 or 1 is the usual single window. */
@@ -423,4 +426,5 @@ class SdlContext
 	bool _credentialsRead = false;
 	bool _touchpadGestures = false;
 	std::atomic<size_t> _virtualMonitors{ 0 }; /* the window count, read by the render thread */
+	bool _touchpadRaw = false;
 };
