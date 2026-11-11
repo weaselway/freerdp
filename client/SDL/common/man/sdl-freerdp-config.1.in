@@ -214,4 +214,20 @@ A string as defined at
 \fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
 .RE
 .RE
+.PP
+\fISDL_TouchpadRaw\fR
+.RS 4
+.PP
+.RS 4
+With /sdl-touchpad-raw, toggles between forwarding every touchpad contact and leaving one and two fingers to Windows\&.
+.br
+
+Default
+\fISDL_SCANCODE_T\fR\&.
+.br
+
+A string as defined at
+\fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
+.RE
+.RE
 .RE
