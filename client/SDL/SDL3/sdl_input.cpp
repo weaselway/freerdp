@@ -23,6 +23,9 @@
 #include "sdl_utils.hpp"
 #include "sdl_prefs.hpp"
 #include "sdl_touch.hpp"
+#if defined(_WIN32)
+#include "sdl_win32_touchpad.hpp"
+#endif
 
 #include <SDL3/SDL_oldnames.h>
 
@@ -641,6 +644,17 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 					return false;
 				return _sdl->setMinimized();
 			}
+#if defined(_WIN32)
+			if ((ev.scancode == _hotkeyTouchpadRaw) && _sdl->touchpadRaw())
+			{
+				const bool raw = sdl::win32::touchpad::toggleRaw();
+				WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s+<%s> pressed, %s",
+				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyTouchpadRaw),
+				           raw ? "forwarding every touchpad contact"
+				               : "leaving one and two fingers to Windows");
+				return keyboard_sync_state();
+			}
+#endif
 		}
 	}
 
@@ -728,6 +742,7 @@ sdlInput::sdlInput(SdlContext* sdl)
 	_hotkeyGrab = prefKeyValue("SDL_Grab", SDL_SCANCODE_G);
 	_hotkeyDisconnect = prefKeyValue("SDL_Disconnect", SDL_SCANCODE_D);
 	_hotkeyMinimize = prefKeyValue("SDL_Minimize", SDL_SCANCODE_M);
+	_hotkeyTouchpadRaw = prefKeyValue("SDL_TouchpadRaw", SDL_SCANCODE_T);
 }
 
 sdlInput::~sdlInput()
