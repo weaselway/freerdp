@@ -147,6 +147,10 @@ class SdlContext
 	 * them. */
 	[[nodiscard]] bool touchpadGestures() const;
 
+	/* /sdl-windows:<n>: the desktop is n monitors side by side, each in a
+	 * window of its own. 0 or 1 is the usual single window. */
+	[[nodiscard]] size_t virtualMonitors() const;
+
 	[[nodiscard]] int start();
 	[[nodiscard]] int join();
 	[[nodiscard]] bool shallAbort(bool ignoreDialogs = false);
@@ -391,4 +395,5 @@ class SdlContext
 	std::vector<rdpPointer*> _valid_pointers;
 	bool _credentialsRead = false;
 	bool _touchpadGestures = false;
+	size_t _virtualMonitors = 0;
 };

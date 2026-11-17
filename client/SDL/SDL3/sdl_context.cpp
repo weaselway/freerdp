@@ -52,6 +52,7 @@ static constexpr auto sdl_presenter = "sdl-presenter";
 static constexpr auto sdl_zero_copy = "sdl-zero-copy";
 static constexpr auto sdl_stats_log = "sdl-stats-log";
 static constexpr auto sdl_touchpad_gestures = "sdl-touchpad-gestures";
+static constexpr auto sdl_windows = "sdl-windows";
 
 SdlContext::SdlContext(rdpContext* context)
     : _context(context), _log(WLog_Get(CLIENT_TAG("SDL"))), _cursor(nullptr, sdl_Pointer_FreeCopy),
@@ -108,6 +109,10 @@ SdlContext::SdlContext(rdpContext* context)
 	_args.push_back({ sdl_touchpad_gestures, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse,
 	                  nullptr, -1, nullptr,
 	                  "Forward 3+ finger touchpad gestures as touch input (Windows)" });
+	_args.push_back({ sdl_windows, COMMAND_LINE_VALUE_REQUIRED, "<count>", nullptr, nullptr, -1,
+	                  nullptr,
+	                  "Show the desktop as <count> monitors side by side, each in a window of "
+	                  "its own (with /dynamic-resolution)" });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -213,6 +218,19 @@ BOOL SdlContext::preConnect(freerdp* instance)
 	if (PubSub_SubscribeUserNotification(instance->context->pubSub,
 	                                     sdl_OnUserNotificationEventHandler) < 0)
 		return FALSE;
+
+	if ((sdl->virtualMonitors() > 1) &&
+	    (freerdp_settings_get_bool(settings, FreeRDP_UseMultimon) ||
+	     freerdp_settings_get_bool(settings, FreeRDP_Fullscreen) ||
+	     freerdp_settings_get_bool(settings, FreeRDP_RemoteApplicationMode) ||
+	     !freerdp_settings_get_bool(settings, FreeRDP_DynamicResolutionUpdate)))
+	{
+		WLog_Print(sdl->getWLog(), WLOG_ERROR,
+		           "/%s needs /dynamic-resolution, and does not go with /multimon, /f or "
+		           "/app",
+		           sdl_windows);
+		return FALSE;
+	}
 
 	if (!freerdp_settings_get_bool(settings, FreeRDP_AuthenticationOnly))
 	{
@@ -425,12 +443,17 @@ bool SdlContext::createWindows()
 	RenderPause pause(this);
 
 	UINT32 windowCount = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
+	/* /sdl-windows: all on the first display, each the size of a single window. */
+	const auto virtualCount = static_cast<UINT32>(virtualMonitors());
+	const bool virtualWindows = virtualCount > 1;
+	if (virtualWindows)
+		windowCount = virtualCount;
 
 	/* The monitor definitions are sorted (primary first), so they need not be in the same
 	 * order as the monitor IDs. Match them by display, fall back to the index. */
 	auto monitorFor = [&](UINT32 index, int64_t id)
 	{
-		for (UINT32 y = 0; y < windowCount; y++)
+		for (UINT32 y = 0; y < freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount); y++)
 		{
 			auto cur = static_cast<rdpMonitor*>(
 			    freerdp_settings_get_pointer_array_writable(settings, FreeRDP_MonitorDefArray, y));
@@ -445,11 +468,11 @@ bool SdlContext::createWindows()
 	Sint32 originY = 0;
 	for (UINT32 x = 0; x < windowCount; x++)
 	{
-		auto id = monitorId(x);
+		auto id = monitorId(virtualWindows ? 0 : x);
 		if (id < 0)
 			return false;
 
-		auto monitor = monitorFor(x, id);
+		auto monitor = monitorFor(virtualWindows ? 0 : x, id);
 
 		originX = std::min<Sint32>(monitor->x, originX);
 		originY = std::min<Sint32>(monitor->y, originY);
@@ -457,11 +480,11 @@ bool SdlContext::createWindows()
 
 	for (UINT32 x = 0; x < windowCount; x++)
 	{
-		auto id = monitorId(x);
+		auto id = monitorId(virtualWindows ? 0 : x);
 		if (id < 0)
 			return false;
 
-		auto monitor = monitorFor(x, id);
+		auto monitor = monitorFor(virtualWindows ? 0 : x, id);
 
 		Uint32 w = WINPR_ASSERTING_INT_CAST(Uint32, monitor->width);
 		Uint32 h = WINPR_ASSERTING_INT_CAST(Uint32, monitor->height);
@@ -506,6 +529,23 @@ bool SdlContext::createWindows()
 		{
 			window.setOffsetX(originX - monitor->x);
 			window.setOffsetY(originY - monitor->y);
+		}
+
+		/* Side by side around where the single window would be; the real
+		 * layout follows in updateWindowList(). */
+		window.setMonitorIndex(static_cast<UINT16>(x));
+		if (virtualWindows)
+		{
+			int wx = 0;
+			int wy = 0;
+			int ww = 0;
+			int wh = 0;
+			if (SDL_GetWindowPosition(window.window(), &wx, &wy) &&
+			    SDL_GetWindowSize(window.window(), &ww, &wh))
+			{
+				const auto shift = static_cast<int>(2 * x) - static_cast<int>(windowCount - 1);
+				std::ignore = SDL_SetWindowPosition(window.window(), wx + (shift * ww / 2), wy);
+			}
 		}
 
 		_windows.insert({ window.id(), std::move(window) });
@@ -568,6 +608,24 @@ bool SdlContext::updateWindowList()
 	for (const auto& win : _windows)
 		list.push_back(win.second.monitor(_windows.size() == 1));
 
+	/* /sdl-windows: the windows are monitors side by side, in the order they
+	 * were created, the first one primary. */
+	if (virtualMonitors() > 1)
+	{
+		INT32 x = 0;
+		auto it = _windows.begin();
+		for (auto& m : list)
+		{
+			m.x = x;
+			m.y = 0;
+			m.is_primary = (x == 0);
+			it->second.setOffsetX(-x);
+			it->second.setOffsetY(0);
+			x += m.width;
+			++it;
+		}
+	}
+
 #if defined(__EMSCRIPTEN__)
 	if ((list.size() == 1) && (list.at(0).width > 0) && (list.at(0).height > 0))
 	{
@@ -584,8 +642,30 @@ bool SdlContext::updateWindowList()
 	    std::none_of(list.cbegin(), list.cend(), [](const rdpMonitor& m) { return m.is_primary; }))
 		list.at(0).is_primary = true;
 
-	return freerdp_settings_set_monitor_def_array_sorted(context()->settings, list.data(),
-	                                                     list.size());
+	auto settings = context()->settings;
+	if (!freerdp_settings_set_monitor_def_array_sorted(settings, list.data(), list.size()))
+		return false;
+
+	/* The array is sorted now, primary first; the server knows each window
+	 * by its index in it. */
+	const auto shiftX = freerdp_settings_get_int32(settings, FreeRDP_MonitorLocalShiftX);
+	const auto shiftY = freerdp_settings_get_int32(settings, FreeRDP_MonitorLocalShiftY);
+	const auto count = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
+	if (list.size() != _windows.size()) /* a split browser canvas */
+		return true;
+	auto it = _windows.begin();
+	for (const auto& m : list)
+	{
+		for (UINT32 i = 0; i < count; i++)
+		{
+			auto sorted = static_cast<const rdpMonitor*>(
+			    freerdp_settings_get_pointer_array(settings, FreeRDP_MonitorDefArray, i));
+			if (sorted && (sorted->x == m.x - shiftX) && (sorted->y == m.y - shiftY))
+				it->second.setMonitorIndex(static_cast<UINT16>(i));
+		}
+		++it;
+	}
+	return true;
 }
 
 bool SdlContext::updateWindow(SDL_WindowID id)
@@ -945,7 +1025,8 @@ int SdlContext::error_info_to_error(DWORD* pcode, char** msg, size_t* len) const
 
 void SdlContext::applyMonitorOffset(SDL_WindowID window, float& x, float& y) const
 {
-	if (!freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon))
+	if (!freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon) &&
+	    (virtualMonitors() <= 1))
 		return;
 
 	auto w = getWindowForId(window);
@@ -1164,7 +1245,8 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 	else
 	{
 		SDL_Point offset{ 0, 0 };
-		if (freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon) &&
+		if ((freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon) ||
+		     (virtualMonitors() > 1)) &&
 		    !fromSharedMemory)
 			offset = { window.offsetX(), window.offsetY() };
 		if (!window.drawRects(surface, offset, fromSharedMemory ? sharedRects : rects))
@@ -1885,6 +1967,11 @@ bool SdlContext::touchpadGestures() const
 	return _touchpadGestures;
 }
 
+size_t SdlContext::virtualMonitors() const
+{
+	return _virtualMonitors;
+}
+
 COMMAND_LINE_ARGUMENT_A* SdlContext::args()
 {
 	return _args.data();
@@ -1960,6 +2047,17 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		else if (strcmp(arg->Name, sdl_touchpad_gestures) == 0)
 		{
 			sdl->_touchpadGestures = arg->Value != nullptr;
+		}
+		else if (strcmp(arg->Name, sdl_windows) == 0)
+		{
+			const auto count = arg->Value ? strtoul(arg->Value, nullptr, 10) : 0;
+			if ((count < 1) || (count > WWDISPLAY_MAX_MONITORS))
+			{
+				WLog_ERR(CLIENT_TAG("SDL"), "Invalid /%s value '%s', expected 1 to %d",
+				         sdl_windows, arg->Value ? arg->Value : "", WWDISPLAY_MAX_MONITORS);
+				return -2;
+			}
+			sdl->_virtualMonitors = count;
 		}
 		else if (strcmp(arg->Name, sdl_show_stats) == 0)
 		{

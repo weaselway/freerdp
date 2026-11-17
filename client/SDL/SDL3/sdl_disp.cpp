@@ -146,7 +146,8 @@ void sdlDispContext::OnActivated(void* context, const ActivatedEventArgs* e)
 			return;
 		const bool split = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount) > 1;
 #else
-		const bool split = false;
+		/* Likewise with /sdl-windows: the connect only carries the first window. */
+		const bool split = sdl->virtualMonitors() > 1;
 #endif
 		if (e->firstActivation && !split)
 			return;
