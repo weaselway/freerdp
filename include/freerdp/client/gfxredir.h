@@ -49,6 +49,7 @@ extern "C"
 		void* section;
 		UINT64 offset;
 		UINT64 poolSerial;
+		UINT64 poolId;
 	} GFXREDIR_BUFFER_MAPPING;
 
 	/* Every callback is optional; leave one nullptr to ignore that PDU. The

@@ -36,14 +36,28 @@
 
 #define TAG CHANNELS_TAG("gfxredir.client")
 
-/* The server only ever needs a handful; a linear scan is cheaper than a map. */
-#define GFXREDIR_MAX_BUFFERS 8
+/* The server only ever needs a handful; a linear scan is cheaper than a map.
+ * One pool per screen, three buffers each, with room for a resize in flight. */
+#define GFXREDIR_MAX_POOLS 8
+#define GFXREDIR_MAX_BUFFERS 32
 
 typedef struct
 {
 	BOOL used;
 	GFXREDIR_CREATE_BUFFER_PDU desc;
 } GFXREDIR_BUFFER;
+
+/* A mapped pool. serial is unique per mapping, so a reader can tell a new pool
+ * from an old one even when the id, handle or address repeat. */
+typedef struct
+{
+	UINT64 id;
+	HANDLE mapping;
+	BOOL writable; /* mapping was opened with FILE_MAP_ALL_ACCESS */
+	void* addr;
+	UINT64 size;
+	UINT64 serial;
+} GFXREDIR_POOL;
 
 typedef struct
 {
@@ -56,15 +70,9 @@ typedef struct
 	 * /wslgsharedmemorypath. Without it we cannot map a pool at all. */
 	char* sharedMemoryPath;
 
-	/* The single pool the server has open, if any. poolSerial counts the
-	 * mappings, so a reader can tell a new pool from an old one even when the
-	 * id, handle or address repeat. */
-	UINT64 poolId;
-	HANDLE poolMapping;
-	BOOL poolWritable; /* poolMapping was opened with FILE_MAP_ALL_ACCESS */
-	void* poolAddr;
-	UINT64 poolSize;
-	UINT64 poolSerial;
+	/* The pools the server has open; addr is nullptr for a free entry. */
+	GFXREDIR_POOL pools[GFXREDIR_MAX_POOLS];
+	UINT64 poolSerial; /* counts the mappings */
 
 	GFXREDIR_BUFFER buffers[GFXREDIR_MAX_BUFFERS];
 } GFXREDIR_PLUGIN;
@@ -310,6 +318,16 @@ static void gfxredir_forget_pool_buffers(GFXREDIR_PLUGIN* gfxredir, UINT64 poolI
 	}
 }
 
+static GFXREDIR_POOL* gfxredir_find_pool(GFXREDIR_PLUGIN* gfxredir, UINT64 poolId)
+{
+	for (size_t i = 0; i < GFXREDIR_MAX_POOLS; i++)
+	{
+		if (gfxredir->pools[i].addr && (gfxredir->pools[i].id == poolId))
+			return &gfxredir->pools[i];
+	}
+	return nullptr;
+}
+
 /**
  * Resolve a buffer to a pointer into the mapped pool, validating that the
  * geometry the server described actually fits inside the mapping. The server
@@ -342,8 +360,9 @@ static BOOL gfxredir_get_buffer_mapping(GfxRedirClientContext* context, UINT64 b
 	}
 
 	const GFXREDIR_CREATE_BUFFER_PDU* desc = &buffer->desc;
+	const GFXREDIR_POOL* pool = gfxredir_find_pool(gfxredir, desc->poolId);
 
-	if (!gfxredir->poolAddr || (gfxredir->poolId != desc->poolId))
+	if (!pool)
 	{
 		WLog_ERR(TAG, "pool %" PRIu64 " for bufferId=%" PRIu64 " is not mapped", desc->poolId,
 		         bufferId);
@@ -359,45 +378,38 @@ static BOOL gfxredir_get_buffer_mapping(GfxRedirClientContext* context, UINT64 b
 
 	/* Last row only needs width pixels, not a full stride. */
 	const UINT64 span = ((UINT64)(desc->height - 1) * desc->stride) + (4ull * desc->width);
-	if ((desc->offset > gfxredir->poolSize) || (span > (gfxredir->poolSize - desc->offset)))
+	if ((desc->offset > pool->size) || (span > (pool->size - desc->offset)))
 	{
 		WLog_ERR(TAG,
 		         "bufferId=%" PRIu64 " does not fit its pool: offset=%" PRIu64 " span=%" PRIu64
 		         " poolSize=%" PRIu64,
-		         bufferId, desc->offset, span, gfxredir->poolSize);
+		         bufferId, desc->offset, span, pool->size);
 		return FALSE;
 	}
 
-	mapping->data = (const BYTE*)gfxredir->poolAddr + desc->offset;
+	mapping->data = (const BYTE*)pool->addr + desc->offset;
 	mapping->size = (size_t)span;
 	mapping->stride = desc->stride;
 	mapping->width = desc->width;
 	mapping->height = desc->height;
 	mapping->format = desc->format;
-	mapping->section = gfxredir->poolWritable ? gfxredir->poolMapping : nullptr;
+	mapping->section = pool->writable ? pool->mapping : nullptr;
 	mapping->offset = desc->offset;
-	mapping->poolSerial = gfxredir->poolSerial;
+	mapping->poolSerial = pool->serial;
+	mapping->poolId = pool->id;
 	return TRUE;
 }
 
-/* Release whatever pool mapping we are holding, if any. */
-static void gfxredir_unmap_pool(GFXREDIR_PLUGIN* gfxredir)
+/* Release a pool entry's mapping, if any, and free the entry. */
+static void gfxredir_unmap_pool(GFXREDIR_POOL* pool)
 {
-	if (gfxredir->poolAddr)
-	{
-		(void)UnmapViewOfFile(gfxredir->poolAddr);
-		gfxredir->poolAddr = nullptr;
-	}
+	if (pool->addr)
+		(void)UnmapViewOfFile(pool->addr);
 
-	if (gfxredir->poolMapping)
-	{
-		(void)CloseHandle(gfxredir->poolMapping);
-		gfxredir->poolMapping = nullptr;
-	}
+	if (pool->mapping)
+		(void)CloseHandle(pool->mapping);
 
-	gfxredir->poolId = 0;
-	gfxredir->poolSize = 0;
-	gfxredir->poolWritable = FALSE;
+	*pool = (GFXREDIR_POOL){ 0 };
 }
 
 /**
@@ -420,7 +432,22 @@ static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POO
 		return;
 	}
 
-	gfxredir_unmap_pool(gfxredir);
+	/* A repeated poolId replaces the old mapping. */
+	GFXREDIR_POOL* pool = gfxredir_find_pool(gfxredir, pdu->poolId);
+	if (pool)
+		gfxredir_unmap_pool(pool);
+
+	for (size_t i = 0; !pool && (i < GFXREDIR_MAX_POOLS); i++)
+	{
+		if (!gfxredir->pools[i].addr)
+			pool = &gfxredir->pools[i];
+	}
+
+	if (!pool)
+	{
+		WLog_ERR(TAG, "no free pool slot for poolId=%" PRIu64, pdu->poolId);
+		return;
+	}
 
 	/* sectionNameLength counts wchars and includes the terminator. */
 	sectionName = ConvertWCharNToUtf8Alloc((const WCHAR*)pdu->sectionName,
@@ -439,11 +466,11 @@ static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POO
 		goto out;
 	}
 
-	gfxredir->poolMapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, fullName);
-	gfxredir->poolWritable = (gfxredir->poolMapping != nullptr);
-	if (!gfxredir->poolMapping)
-		gfxredir->poolMapping = OpenFileMappingA(FILE_MAP_READ, FALSE, fullName);
-	if (!gfxredir->poolMapping)
+	pool->mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, fullName);
+	pool->writable = (pool->mapping != nullptr);
+	if (!pool->mapping)
+		pool->mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, fullName);
+	if (!pool->mapping)
 	{
 		WLog_ERR(TAG, "OpenFileMapping(\"%s\") failed with 0x%08" PRIx32, fullName,
 		         (UINT32)GetLastError());
@@ -453,26 +480,24 @@ static void gfxredir_map_pool(GFXREDIR_PLUGIN* gfxredir, const GFXREDIR_OPEN_POO
 	if (pdu->poolSize > SIZE_MAX)
 	{
 		WLog_ERR(TAG, "pool size %" PRIu64 " does not fit in this address space", pdu->poolSize);
-		gfxredir_unmap_pool(gfxredir);
+		gfxredir_unmap_pool(pool);
 		goto out;
 	}
 
-	gfxredir->poolAddr = MapViewOfFile(gfxredir->poolMapping, FILE_MAP_READ, 0, 0,
-	                                   (SIZE_T)pdu->poolSize);
-	if (!gfxredir->poolAddr)
+	pool->addr = MapViewOfFile(pool->mapping, FILE_MAP_READ, 0, 0, (SIZE_T)pdu->poolSize);
+	if (!pool->addr)
 	{
 		WLog_ERR(TAG, "MapViewOfFile(\"%s\", %" PRIu64 ") failed with 0x%08" PRIx32, fullName,
 		         pdu->poolSize, (UINT32)GetLastError());
-		gfxredir_unmap_pool(gfxredir);
+		gfxredir_unmap_pool(pool);
 		goto out;
 	}
 
-	gfxredir->poolId = pdu->poolId;
-	gfxredir->poolSize = pdu->poolSize;
-	gfxredir->poolSerial++;
+	pool->id = pdu->poolId;
+	pool->size = pdu->poolSize;
+	pool->serial = ++gfxredir->poolSerial;
 	WLog_INFO(TAG, "mapped pool %" PRIu64 " \"%s\" (%" PRIu64 " bytes) at %p%s", pdu->poolId,
-	          fullName, pdu->poolSize, gfxredir->poolAddr,
-	          gfxredir->poolWritable ? "" : ", read-only handle");
+	          fullName, pdu->poolSize, pool->addr, pool->writable ? "" : ", read-only handle");
 
 out:
 	free(sectionName);
@@ -534,8 +559,9 @@ static UINT gfxredir_recv_close_pool(GENERIC_CHANNEL_CALLBACK* callback, wStream
 		error = gfxredir->context->ClosePool(gfxredir->context, &pdu);
 
 	gfxredir_forget_pool_buffers(gfxredir, pdu.poolId);
-	if (gfxredir->poolId == pdu.poolId)
-		gfxredir_unmap_pool(gfxredir);
+	GFXREDIR_POOL* pool = gfxredir_find_pool(gfxredir, pdu.poolId);
+	if (pool)
+		gfxredir_unmap_pool(pool);
 
 	return error;
 }
@@ -803,7 +829,8 @@ static void gfxredir_plugin_terminated(GENERIC_DYNVC_PLUGIN* base)
 
 	WINPR_ASSERT(gfxredir);
 
-	gfxredir_unmap_pool(gfxredir);
+	for (size_t i = 0; i < GFXREDIR_MAX_POOLS; i++)
+		gfxredir_unmap_pool(&gfxredir->pools[i]);
 
 	free(gfxredir->sharedMemoryPath);
 	gfxredir->sharedMemoryPath = nullptr;
