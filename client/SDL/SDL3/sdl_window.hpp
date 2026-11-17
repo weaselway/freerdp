@@ -20,6 +20,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -101,6 +102,11 @@ class SdlWindow
 
 	[[nodiscard]] rdpMonitor monitor(bool isPrimary) const;
 	void setMonitor(rdpMonitor monitor);
+
+	/* The window's index in the monitor layout sent to the server, which is
+	 * also the gfxredir windowId the server draws it with. */
+	[[nodiscard]] UINT16 monitorIndex() const;
+	void setMonitorIndex(UINT16 index);
 
 	[[nodiscard]] float scale() const;
 	[[nodiscard]] SDL_DisplayOrientation orientation() const;
@@ -275,4 +281,5 @@ class SdlWindow
 	Sint32 _offset_x = 0;
 	Sint32 _offset_y = 0;
 	rdpMonitor _monitor{};
+	std::atomic<UINT16> _monitorIndex = 0; /* read by the render thread */
 };

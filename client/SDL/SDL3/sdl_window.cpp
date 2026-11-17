@@ -125,7 +125,7 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
       _gdiTexture(other._gdiTexture), _gdiTextureW(other._gdiTextureW),
       _gdiTextureH(other._gdiTextureH), _initialW(other._initialW), _initialH(other._initialH),
       _displayID(other._displayID), _offset_x(other._offset_x), _offset_y(other._offset_y),
-      _monitor(other._monitor)
+      _monitor(other._monitor), _monitorIndex(other._monitorIndex.load())
 {
 	other._window = nullptr;
 	other._renderer = nullptr;
@@ -224,6 +224,16 @@ rdpMonitor SdlWindow::monitor(bool isPrimary) const
 void SdlWindow::setMonitor(rdpMonitor monitor)
 {
 	_monitor = monitor;
+}
+
+UINT16 SdlWindow::monitorIndex() const
+{
+	return _monitorIndex;
+}
+
+void SdlWindow::setMonitorIndex(UINT16 index)
+{
+	_monitorIndex = index;
 }
 
 float SdlWindow::scale() const
@@ -946,7 +956,7 @@ void SdlWindow::recordPresentTiming()
 		const auto p50 = pct(50);
 		const auto p90 = pct(90);
 		const auto frames = static_cast<UINT32>(v.size());
-		const auto rc = ww->SendPresentTiming(ww, frames, p10);
+		const auto rc = ww->SendPresentTiming(ww, _monitorIndex, frames, p10);
 		if (s_statsLog)
 			(void)fprintf(s_statsLog, "[timing] %u frames  slack p10/50/90 %d/%d/%d us  rc %u\n",
 			              frames, p10, p50, p90, rc);

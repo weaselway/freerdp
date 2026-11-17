@@ -370,10 +370,13 @@ void sdlDispContext::updateRefreshRate()
 	auto ww = _ww.load();
 	if (!ww)
 		return;
-	auto window = _sdl->getFirstWindow();
-	if (!window)
-		return;
+	for (auto& window : _sdl->windows())
+		updateRefreshRate(ww, window.second);
+}
 
+void sdlDispContext::updateRefreshRate(WwDisplayClientContext* ww, const SdlWindow& w)
+{
+	const auto window = &w;
 	UINT32 mhz = 0;
 #if defined(_WIN32)
 	auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(
@@ -390,8 +393,8 @@ void sdlDispContext::updateRefreshRate()
 	if (mhz == 0)
 		return;
 
-	WLog_DBG(TAG, "monitor refresh rate %" PRIu32 " mHz", mhz);
-	const auto rc = ww->SetRefreshRate(ww, mhz);
+	WLog_DBG(TAG, "monitor %" PRIu16 " refresh rate %" PRIu32 " mHz", window->monitorIndex(), mhz);
+	const auto rc = ww->SetRefreshRate(ww, window->monitorIndex(), mhz);
 	if (rc != CHANNEL_RC_OK)
 		WLog_WARN(TAG, "sending the refresh rate failed: 0x%08" PRIx32, rc);
 }

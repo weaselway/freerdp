@@ -1295,6 +1295,11 @@ SdlWindow* SdlContext::getFirstWindow()
 	return &_windows.begin()->second;
 }
 
+std::map<SDL_WindowID, SdlWindow>& SdlContext::windows()
+{
+	return _windows;
+}
+
 sdlDispContext& SdlContext::getDisplayChannelContext()
 {
 	return _disp;

@@ -30,6 +30,8 @@
 
 #include <SDL3/SDL.h>
 
+class SdlWindow;
+
 class sdlDispContext
 {
 
@@ -64,6 +66,7 @@ class sdlDispContext
 	[[nodiscard]] bool addTimer();
 
 	void updateRefreshRate();
+	void updateRefreshRate(WwDisplayClientContext* ww, const SdlWindow& window);
 
 	[[nodiscard]] bool updateMonitor(SDL_WindowID id);
 	[[nodiscard]] bool updateMonitors(SDL_EventType type, SDL_DisplayID displayID);

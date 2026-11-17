@@ -23,10 +23,12 @@
 #include <freerdp/types.h>
 
 /*
- * What weaselwayd needs to know about the monitor the client's window is on
- * that RDP has no field for. The server opens the channel; the client sends.
+ * What weaselwayd needs to know about each monitor of the client's that RDP
+ * has no field for. The server opens the channel; the client sends.
  *
- * Every PDU, little endian: UINT16 type, UINT16 reserved (0), then the body.
+ * Every PDU, little endian: UINT16 type, UINT16 monitor, then the body. The
+ * monitor is the index into the client's monitor layout, which is also the
+ * gfxredir windowId the server draws that monitor into.
  *
  * WWDISPLAY_PDU_REFRESH_RATE: UINT32 refresh rate in millihertz. The
  * physical rate of the monitor, the highest it runs at with variable or
@@ -43,5 +45,7 @@
 
 #define WWDISPLAY_PDU_REFRESH_RATE 1
 #define WWDISPLAY_PDU_PRESENT_TIMING 2
+
+#define WWDISPLAY_MAX_MONITORS 16
 
 #endif /* FREERDP_CHANNEL_WWDISPLAY_H */
