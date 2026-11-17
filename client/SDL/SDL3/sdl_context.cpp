@@ -1080,31 +1080,52 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 	SdlWindow::addStat(SdlWindow::STAT_LOCK, lockDone - lockStart);
 
 	/* While gfxredir drives the output the pixels live in the server's shared
-	 * memory, so upload from there instead of the gdi primary buffer. */
-	const bool fromSharedMemory = (_gfxRedirSurface != nullptr);
-	auto surface = fromSharedMemory ? _gfxRedirSurface : _primary.get();
+	 * memory, so upload from there instead of the gdi primary buffer. Each
+	 * window has a buffer of its own, drawn at its origin. */
+	GfxRedirTarget* target = nullptr;
+	SDL_Surface* surface = _primary.get();
+	if (auto t = _gfxRedirTargets.find(window.monitorIndex()); t != _gfxRedirTargets.end())
+	{
+		if (auto b = _gfxRedirBuffers.find(t->second.bufferId); b != _gfxRedirBuffers.end())
+		{
+			target = &t->second;
+			surface = b->second.surface.get();
+		}
+	}
+	const bool fromSharedMemory = (target != nullptr);
 
+	std::vector<SDL_Rect> sharedRects;
 	if (fromSharedMemory)
 	{
+		/* Rects are the desktop's; this window only needs what its own
+		 * presents changed, and nothing if there is none. Empty is a full
+		 * redraw. */
+		if (!rects.empty())
+		{
+			if (target->dirty.empty())
+				return true;
+			sharedRects = target->dirty;
+		}
+		target->dirty.clear();
+
 		_gfxRedirDrawnAt = GetTickCount64();
 		_gfxRedirDrawCount++;
 
-		const UINT64 presentId =
-		    _gfxRedirPending.empty() ? 0 : _gfxRedirPending.back().presentId;
+		const UINT64 presentId = target->pending.empty() ? 0 : target->pending.back().presentId;
 		if (presentId != 0)
 		{
 			/* Only the first time a present is drawn: expose redraws upload
 			 * from it again and would count its age as latency. */
-			if (presentId != _gfxRedirDrawnPresentId)
+			if (presentId != target->drawnPresentId)
 			{
-				const auto queuedAt = _gfxRedirPending.back().queuedAtNS;
+				const auto queuedAt = target->pending.back().queuedAtNS;
 				SdlWindow::setFrameQueuedAt(queuedAt);
 				SdlWindow::addStat(SdlWindow::STAT_WAIT, lockStart - queuedAt);
 			}
-			_gfxRedirDrawnPresentId = presentId;
+			target->drawnPresentId = presentId;
 		}
 
-		if (rects.empty())
+		if (sharedRects.empty())
 		{
 			WLog_Print(getWLog(), WLOG_DEBUG,
 			           "gfxredir: draw window %" PRIu32 " full %dx%d (present %" PRIu64 ")",
@@ -1112,7 +1133,7 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 		}
 		else
 		{
-			for (const auto& r : rects)
+			for (const auto& r : sharedRects)
 			{
 				WLog_Print(getWLog(), WLOG_DEBUG,
 				           "gfxredir: draw window %" PRIu32 " rect=%dx%d+%d+%d (present %" PRIu64
@@ -1137,15 +1158,16 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 
 		_localScale = { static_cast<float>(size.w) / static_cast<float>(gdi->width),
 			            static_cast<float>(size.h) / static_cast<float>(gdi->height) };
-		if (!window.drawScaledRects(surface, _localScale, rects))
+		if (!window.drawScaledRects(surface, _localScale, fromSharedMemory ? sharedRects : rects))
 			return false;
 	}
 	else
 	{
 		SDL_Point offset{ 0, 0 };
-		if (freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon))
+		if (freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon) &&
+		    !fromSharedMemory)
 			offset = { window.offsetX(), window.offsetY() };
-		if (!window.drawRects(surface, offset, rects))
+		if (!window.drawRects(surface, offset, fromSharedMemory ? sharedRects : rects))
 			return false;
 	}
 
@@ -2241,7 +2263,7 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	auto& buffer = _gfxRedirBuffers[present->bufferId];
 	if (!buffer.surface || (buffer.data != mapping.data) || (buffer.width != width) ||
 	    (buffer.height != height) || (buffer.stride != stride) || (buffer.format != format) ||
-	    (buffer.poolSerial != mapping.poolSerial))
+	    (buffer.poolSerial != mapping.poolSerial) || (buffer.poolId != mapping.poolId))
 	{
 		buffer.surface = SDLSurfacePtr(
 		    SDL_CreateSurfaceFrom(width, height, format, const_cast<void*>(mapping.data), stride),
@@ -2270,6 +2292,7 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 #endif
 		buffer.data = mapping.data;
 		buffer.poolSerial = mapping.poolSerial;
+		buffer.poolId = mapping.poolId;
 		buffer.width = width;
 		buffer.height = height;
 		buffer.stride = stride;
@@ -2296,10 +2319,12 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 
 	/* Draw from the newest present; the older ones in the queue are still owed
 	 * an ack, but their pixels are superseded by this frame. */
-	_gfxRedirSurface = buffer.surface.get();
+	auto& target = _gfxRedirTargets[present->windowId];
+	target.bufferId = present->bufferId;
+	target.dirty.push_back(rect);
 
 	_gfxRedir = redir;
-	_gfxRedirPending.push_back(
+	target.pending.push_back(
 	    { present->windowId, present->presentId, GetTickCount64(), SDL_GetTicksNS() });
 	SdlWindow::countFrameIn();
 	_gfxRedirQueueCount++;
@@ -2307,7 +2332,7 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	const auto queueCount = _gfxRedirQueueCount;
 	const auto drawCount = _gfxRedirDrawCount;
 	const auto dropCount = _gfxRedirDropCount;
-	const auto inflight = _gfxRedirPending.size();
+	const auto inflight = target.pending.size();
 
 	lock.unlock();
 
@@ -2315,10 +2340,11 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	 * previous one, i.e. we are the bottleneck rather than the overlap
 	 * working. Not expected, but not an error either. */
 	WLog_Print(getWLog(), WLOG_DEBUG,
-	           "gfxredir: queue present %" PRIu64 " buffer %" PRIu64 " rect=%dx%d+%d+%d"
-	           " (inflight=%" PRIuz " queued=%" PRIu64 " drawn=%" PRIu64 " dropped=%" PRIu64 ")",
-	           present->presentId, present->bufferId, rect.w, rect.h, rect.x, rect.y, inflight,
-	           queueCount, drawCount, dropCount);
+	           "gfxredir: queue present %" PRIu64 " window %" PRIu64 " buffer %" PRIu64
+	           " rect=%dx%d+%d+%d (inflight=%" PRIuz " queued=%" PRIu64 " drawn=%" PRIu64
+	           " dropped=%" PRIu64 ")",
+	           present->presentId, present->windowId, present->bufferId, rect.w, rect.h, rect.x,
+	           rect.y, inflight, queueCount, drawCount, dropCount);
 
 	return pushUpdate({ rect });
 }
@@ -2333,7 +2359,7 @@ void SdlContext::gfxRedirCompletePresent()
 
 	{
 		std::unique_lock lock(_critical);
-		if (_gfxRedirPending.empty() || !_gfxRedir)
+		if (!_gfxRedir)
 			return;
 
 		redir = _gfxRedir;
@@ -2342,12 +2368,17 @@ void SdlContext::gfxRedirCompletePresent()
 		/* Only presents older than the one last drawn: those are superseded.
 		 * The drawn one stays (see the header), and anything queued after the
 		 * upload hasn't been looked at yet. Present ids only grow. */
-		const auto drawn = _gfxRedirDrawnPresentId;
-		auto keep = std::stable_partition(_gfxRedirPending.begin(), _gfxRedirPending.end(),
-		                           [drawn](const GfxRedirPending& p)
-		                           { return p.presentId < drawn; });
-		pending.assign(_gfxRedirPending.begin(), keep);
-		_gfxRedirPending.erase(_gfxRedirPending.begin(), keep);
+		for (auto& [windowId, target] : _gfxRedirTargets)
+		{
+			const auto drawn = target.drawnPresentId;
+			auto keep = std::stable_partition(target.pending.begin(), target.pending.end(),
+			                                  [drawn](const GfxRedirPending& p)
+			                                  { return p.presentId < drawn; });
+			pending.insert(pending.end(), target.pending.begin(), keep);
+			target.pending.erase(target.pending.begin(), keep);
+		}
+		if (pending.empty())
+			return;
 	}
 
 	/* Every superseded present still owes the server an ack before it will
@@ -2376,11 +2407,33 @@ void SdlContext::gfxRedirReset()
 {
 	std::unique_lock lock(_critical);
 
-	_gfxRedirSurface = nullptr;
 	_gfxRedirBuffers.clear();
+	_gfxRedirTargets.clear();
 	_gfxRedir = nullptr;
-	_gfxRedirPending.clear();
-	_gfxRedirDrawnPresentId = 0;
+}
+
+/* A window whose buffer is gone shows nothing until its next present. The
+ * server forgets the presents of a destroyed buffer, so they are not acked. */
+void SdlContext::gfxRedirDropBuffer(UINT64 bufferId)
+{
+	std::unique_lock lock(_critical);
+
+	_gfxRedirBuffers.erase(bufferId);
+	for (auto it = _gfxRedirTargets.begin(); it != _gfxRedirTargets.end();)
+		it = (it->second.bufferId == bufferId) ? _gfxRedirTargets.erase(it) : std::next(it);
+}
+
+void SdlContext::gfxRedirDropPool(UINT64 poolId)
+{
+	std::unique_lock lock(_critical);
+
+	for (auto it = _gfxRedirBuffers.begin(); it != _gfxRedirBuffers.end();)
+		it = (it->second.poolId == poolId) ? _gfxRedirBuffers.erase(it) : std::next(it);
+	for (auto it = _gfxRedirTargets.begin(); it != _gfxRedirTargets.end();)
+	{
+		const bool shown = _gfxRedirBuffers.find(it->second.bufferId) != _gfxRedirBuffers.end();
+		it = shown ? std::next(it) : _gfxRedirTargets.erase(it);
+	}
 }
 
 bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
@@ -2460,12 +2513,8 @@ BOOL SdlContext::desktopResize(rdpContext* context)
 
 	std::unique_lock lock(sdl->_critical);
 
-	/* The gfxredir surface wraps the shared-memory pool, which the server sizes
-	 * to the old desktop. It will send ClosePool and rebuild, but the ordering
-	 * of the two channels isn't guaranteed, so drop the wrapper now rather than
-	 * risk drawing the old geometry into the resized primary. */
-	sdl->gfxRedirReset();
-
+	/* gfxredir is left alone: each window draws its own buffer, and the
+	 * server replaces the buffers of a window whose size changed. */
 	gdi = context->gdi;
 	if (!gdi_resize(gdi, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
 	                freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight)))

@@ -68,8 +68,8 @@ static UINT sdl_gfxredir_close_pool(GfxRedirClientContext* context,
 		return CHANNEL_RC_OK;
 	WLog_Print(sdl->getWLog(), WLOG_INFO, "gfxredir: ClosePool poolId=%" PRIu64,
 	           closePool->poolId);
-	/* Our surface wraps this pool's memory; it must not outlive the mapping. */
-	sdl->gfxRedirReset();
+	/* Our surfaces wrap this pool's memory; they must not outlive the mapping. */
+	sdl->gfxRedirDropPool(closePool->poolId);
 	return CHANNEL_RC_OK;
 }
 
@@ -95,7 +95,7 @@ static UINT sdl_gfxredir_destroy_buffer(GfxRedirClientContext* context,
 		return CHANNEL_RC_OK;
 	WLog_Print(sdl->getWLog(), WLOG_INFO, "gfxredir: DestroyBuffer bufferId=%" PRIu64,
 	           destroyBuffer->bufferId);
-	sdl->gfxRedirReset();
+	sdl->gfxRedirDropBuffer(destroyBuffer->bufferId);
 	return CHANNEL_RC_OK;
 }
 

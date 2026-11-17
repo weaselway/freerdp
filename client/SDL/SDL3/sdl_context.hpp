@@ -174,6 +174,10 @@ class SdlContext
 	                                        const GFXREDIR_PRESENT_BUFFER_PDU* present);
 	void gfxRedirCompletePresent();
 	void gfxRedirReset();
+	/* The server destroyed a buffer or closed a pool: forget the surfaces
+	 * wrapping its memory, and the windows showing them. */
+	void gfxRedirDropBuffer(UINT64 bufferId);
+	void gfxRedirDropPool(UINT64 poolId);
 	[[nodiscard]] bool minimizeAllWindows();
 	[[nodiscard]] int exitCode() const;
 	[[nodiscard]] SDL_PixelFormat pixelFormat() const;
@@ -330,6 +334,7 @@ class SdlContext
 		int stride = 0;
 		SDL_PixelFormat format = SDL_PIXELFORMAT_UNKNOWN;
 		UINT64 poolSerial = 0;
+		UINT64 poolId = 0;
 	};
 
 	/* Present published by the channel thread, awaiting upload by the SDL
@@ -342,14 +347,22 @@ class SdlContext
 		Uint64 queuedAtNS = 0; /* SDL_GetTicksNS(), for the stats overlay */
 	};
 
+	/* What the server shows in one window (gfxredir windowId = the window's
+	 * monitorIndex()). */
+	struct GfxRedirTarget
+	{
+		UINT64 bufferId = 0;          /* buffer of the newest present */
+		std::vector<SDL_Rect> dirty;  /* presented since the last upload */
+		std::vector<GfxRedirPending> pending;
+		/* Newest present whose pixels have been uploaded; everything older is
+		 * superseded and can be acked. 0 = nothing drawn yet. */
+		UINT64 drawnPresentId = 0;
+	};
+
 	std::map<UINT64, GfxRedirBuffer> _gfxRedirBuffers;
-	SDL_Surface* _gfxRedirSurface = nullptr; /* buffer of the newest present */
+	std::map<UINT64, GfxRedirTarget> _gfxRedirTargets; /* by windowId */
 
 	GfxRedirClientContext* _gfxRedir = nullptr;
-	std::vector<GfxRedirPending> _gfxRedirPending;
-	/* Newest present whose pixels have been uploaded; everything older is
-	 * superseded and can be acked. 0 = nothing drawn yet. */
-	UINT64 _gfxRedirDrawnPresentId = 0;
 
 	/* Tracing: how a frame moves from the channel thread to the screen. */
 	UINT64 _gfxRedirDrawnAt = 0;    /* tick when the SDL thread last uploaded */
