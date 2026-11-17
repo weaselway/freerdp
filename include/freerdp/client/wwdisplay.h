@@ -27,14 +27,16 @@ extern "C"
 
 	typedef struct s_wwdisplay_client_context WwDisplayClientContext;
 
-	/* Remembers the rate and sends it if the server has opened the channel;
-	 * otherwise it goes out when the server does. 0 is not sent. */
-	typedef UINT (*pcWwDisplaySetRefreshRate)(WwDisplayClientContext* context, UINT32 refresh_mhz);
+	/* Remembers the rate of a monitor (< WWDISPLAY_MAX_MONITORS) and sends it
+	 * if the server has opened the channel; otherwise it goes out when the
+	 * server does. 0 is not sent. */
+	typedef UINT (*pcWwDisplaySetRefreshRate)(WwDisplayClientContext* context, UINT16 monitor,
+	                                          UINT32 refresh_mhz);
 
 	/* Sends WWDISPLAY_PDU_PRESENT_TIMING if the server has the channel open;
 	 * otherwise it is dropped. */
-	typedef UINT (*pcWwDisplaySendPresentTiming)(WwDisplayClientContext* context, UINT32 frames,
-	                                             INT32 slack_us);
+	typedef UINT (*pcWwDisplaySendPresentTiming)(WwDisplayClientContext* context, UINT16 monitor,
+	                                             UINT32 frames, INT32 slack_us);
 
 	struct s_wwdisplay_client_context
 	{

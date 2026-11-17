@@ -36,24 +36,25 @@ typedef struct
 	 * closes on the channel thread. */
 	CRITICAL_SECTION lock;
 	IWTSVirtualChannel* channel; /* while the server has it open */
-	UINT32 refresh_mhz;          /* 0 until the client knows it */
+	UINT32 refresh_mhz[WWDISPLAY_MAX_MONITORS]; /* 0 until the client knows it */
 } WWDISPLAY_PLUGIN;
 
 /* Under the lock. */
-static UINT wwdisplay_send_refresh_rate(WWDISPLAY_PLUGIN* ww)
+static UINT wwdisplay_send_refresh_rate(WWDISPLAY_PLUGIN* ww, UINT16 monitor)
 {
 	BYTE pdu[8];
 	wStream sbuffer = WINPR_C_ARRAY_INIT;
 	wStream* s = Stream_StaticInit(&sbuffer, pdu, sizeof(pdu));
 
-	if (!ww->channel || ww->refresh_mhz == 0)
+	if (!ww->channel || ww->refresh_mhz[monitor] == 0)
 		return CHANNEL_RC_OK;
 
 	Stream_Write_UINT16(s, WWDISPLAY_PDU_REFRESH_RATE);
-	Stream_Write_UINT16(s, 0);
-	Stream_Write_UINT32(s, ww->refresh_mhz);
+	Stream_Write_UINT16(s, monitor);
+	Stream_Write_UINT32(s, ww->refresh_mhz[monitor]);
 
-	WLog_Print(ww->base.log, WLOG_DEBUG, "refresh rate %" PRIu32 " mHz", ww->refresh_mhz);
+	WLog_Print(ww->base.log, WLOG_DEBUG, "monitor %" PRIu16 ": refresh rate %" PRIu32 " mHz",
+	           monitor, ww->refresh_mhz[monitor]);
 	return ww->channel->Write(ww->channel, sizeof(pdu), pdu, nullptr);
 }
 
@@ -74,7 +75,9 @@ static UINT wwdisplay_on_open(IWTSVirtualChannelCallback* pChannelCallback)
 
 	EnterCriticalSection(&ww->lock);
 	ww->channel = callback->channel;
-	const UINT rc = wwdisplay_send_refresh_rate(ww);
+	UINT rc = CHANNEL_RC_OK;
+	for (UINT16 i = 0; (i < WWDISPLAY_MAX_MONITORS) && (rc == CHANNEL_RC_OK); i++)
+		rc = wwdisplay_send_refresh_rate(ww, i);
 	LeaveCriticalSection(&ww->lock);
 	return rc;
 }
@@ -97,25 +100,29 @@ static UINT wwdisplay_on_close(IWTSVirtualChannelCallback* pChannelCallback)
 	return CHANNEL_RC_OK;
 }
 
-static UINT wwdisplay_set_refresh_rate(WwDisplayClientContext* context, UINT32 refresh_mhz)
+static UINT wwdisplay_set_refresh_rate(WwDisplayClientContext* context, UINT16 monitor,
+                                       UINT32 refresh_mhz)
 {
 	WINPR_ASSERT(context);
 	WWDISPLAY_PLUGIN* ww = (WWDISPLAY_PLUGIN*)context->handle;
 	WINPR_ASSERT(ww);
 
+	if (monitor >= WWDISPLAY_MAX_MONITORS)
+		return ERROR_INVALID_PARAMETER;
+
 	UINT rc = CHANNEL_RC_OK;
 	EnterCriticalSection(&ww->lock);
-	if (refresh_mhz != ww->refresh_mhz)
+	if (refresh_mhz != ww->refresh_mhz[monitor])
 	{
-		ww->refresh_mhz = refresh_mhz;
-		rc = wwdisplay_send_refresh_rate(ww);
+		ww->refresh_mhz[monitor] = refresh_mhz;
+		rc = wwdisplay_send_refresh_rate(ww, monitor);
 	}
 	LeaveCriticalSection(&ww->lock);
 	return rc;
 }
 
-static UINT wwdisplay_send_present_timing(WwDisplayClientContext* context, UINT32 frames,
-                                          INT32 slack_us)
+static UINT wwdisplay_send_present_timing(WwDisplayClientContext* context, UINT16 monitor,
+                                          UINT32 frames, INT32 slack_us)
 {
 	WINPR_ASSERT(context);
 	WWDISPLAY_PLUGIN* ww = (WWDISPLAY_PLUGIN*)context->handle;
@@ -125,7 +132,7 @@ static UINT wwdisplay_send_present_timing(WwDisplayClientContext* context, UINT3
 	wStream sbuffer = WINPR_C_ARRAY_INIT;
 	wStream* s = Stream_StaticInit(&sbuffer, pdu, sizeof(pdu));
 	Stream_Write_UINT16(s, WWDISPLAY_PDU_PRESENT_TIMING);
-	Stream_Write_UINT16(s, 0);
+	Stream_Write_UINT16(s, monitor);
 	Stream_Write_UINT32(s, frames);
 	Stream_Write_INT32(s, slack_us);
 

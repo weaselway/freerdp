@@ -182,6 +182,7 @@ class SdlContext
 	[[nodiscard]] SdlWindow* getWindowForId(SDL_WindowID id);
 	[[nodiscard]] bool allWindowsHidden() const;
 	[[nodiscard]] SdlWindow* getFirstWindow();
+	[[nodiscard]] std::map<SDL_WindowID, SdlWindow>& windows();
 
 	[[nodiscard]] bool addDisplayWindow(SDL_DisplayID id);
 	[[nodiscard]] bool removeDisplayWindow(SDL_DisplayID id);
