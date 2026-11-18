@@ -1403,11 +1403,8 @@ bool SdlContext::removeVirtualMonitor(SDL_WindowID id)
 bool SdlContext::removeDisplayWindow(SDL_DisplayID id)
 {
 	RenderPause pause(this);
-	for (auto& w : _windows)
-	{
-		if (w.second.displayIndex() == id)
-			_windows.erase(w.first);
-	}
+	for (auto it = _windows.begin(); it != _windows.end();)
+		it = (it->second.displayIndex() == id) ? _windows.erase(it) : std::next(it);
 	return true;
 }
 
