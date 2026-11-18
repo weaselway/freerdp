@@ -132,4 +132,36 @@ A string as defined at
 \fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
 .RE
 .RE
+.PP
+\fISDL_AddMonitor\fR
+.RS 4
+.PP
+.RS 4
+Opens one more window right of the newest, as with /sdl-windows; the server gets one monitor more\&. Needs /dynamic-resolution, not with /multimon, fullscreen or /app\&.
+.br
+
+Default
+\fISDL_SCANCODE_N\fR\&.
+.br
+
+A string as defined at
+\fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
+.RE
+.RE
+.PP
+\fISDL_RemoveMonitor\fR
+.RS 4
+.PP
+.RS 4
+Closes the focused window and its monitor; the last window stays\&. The same limits as SDL_AddMonitor\&.
+.br
+
+Default
+\fISDL_SCANCODE_X\fR\&.
+.br
+
+A string as defined at
+\fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
+.RE
+.RE
 .RE

@@ -640,6 +640,23 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 					return false;
 				return _sdl->setMinimized();
 			}
+			if (ev.scancode == _hotkeyAddMonitor)
+			{
+				WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s+<%s> pressed, adding a monitor window",
+				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyAddMonitor));
+				if (!keyboard_sync_state())
+					return false;
+				return _sdl->addVirtualMonitor();
+			}
+			if (ev.scancode == _hotkeyRemoveMonitor)
+			{
+				WLog_Print(
+				    _sdl->getWLog(), WLOG_INFO, "%s+<%s> pressed, removing this monitor window",
+				    masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyRemoveMonitor));
+				if (!keyboard_sync_state())
+					return false;
+				return _sdl->removeVirtualMonitor(ev.windowID);
+			}
 		}
 	}
 
@@ -727,6 +744,8 @@ sdlInput::sdlInput(SdlContext* sdl)
 	_hotkeyGrab = prefKeyValue("SDL_Grab", SDL_SCANCODE_G);
 	_hotkeyDisconnect = prefKeyValue("SDL_Disconnect", SDL_SCANCODE_D);
 	_hotkeyMinimize = prefKeyValue("SDL_Minimize", SDL_SCANCODE_M);
+	_hotkeyAddMonitor = prefKeyValue("SDL_AddMonitor", SDL_SCANCODE_N);
+	_hotkeyRemoveMonitor = prefKeyValue("SDL_RemoveMonitor", SDL_SCANCODE_X);
 }
 
 sdlInput::~sdlInput()

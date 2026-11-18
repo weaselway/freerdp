@@ -54,6 +54,15 @@ class sdlDispContext
 	[[nodiscard]] bool handleEvent(const SDL_DisplayEvent& ev);
 	[[nodiscard]] bool handleEvent(const SDL_WindowEvent& ev);
 
+	/* Sends the layout now, and checks again for a while. */
+	[[nodiscard]] bool addTimer();
+
+	/* MaxNumMonitors of the server's caps, 0 before them. */
+	[[nodiscard]] UINT32 maxMonitors() const
+	{
+		return _maxMonitors;
+	}
+
   private:
 	[[nodiscard]] UINT DisplayControlCaps(UINT32 maxNumMonitors, UINT32 maxMonitorAreaFactorA,
 	                                      UINT32 maxMonitorAreaFactorB);
@@ -62,8 +71,6 @@ class sdlDispContext
 	[[nodiscard]] bool sendResize();
 	[[nodiscard]] bool settings_changed(const std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT>& layout);
 	[[nodiscard]] bool sendLayout(const rdpMonitor* monitors, size_t nmonitors);
-
-	[[nodiscard]] bool addTimer();
 
 	void updateRefreshRate();
 	void updateRefreshRate(WwDisplayClientContext* ww, const SdlWindow& window);
@@ -84,6 +91,7 @@ class sdlDispContext
 	std::atomic<WwDisplayClientContext*> _ww = nullptr;
 	UINT64 _lastSentDate = 0;
 	bool _activated = false;
+	std::atomic<UINT32> _maxMonitors{ 0 }; /* set on the channel thread */
 	bool _waitingResize = false;
 	SDL_TimerID _timer = 0;
 	unsigned _timer_retries = 0;

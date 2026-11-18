@@ -153,6 +153,11 @@ class SdlContext
 	 * window of its own. 0 or 1 is the usual single window. */
 	[[nodiscard]] size_t virtualMonitors() const;
 
+	/* Hotkeys: one more window right of the newest (on its display), or close the given one but
+	 * never the last. Both switch to the /sdl-windows layout. */
+	[[nodiscard]] bool addVirtualMonitor();
+	[[nodiscard]] bool removeVirtualMonitor(SDL_WindowID id);
+
 	[[nodiscard]] int start();
 	[[nodiscard]] int join();
 	[[nodiscard]] bool shallAbort(bool ignoreDialogs = false);
@@ -398,5 +403,5 @@ class SdlContext
 	std::vector<rdpPointer*> _valid_pointers;
 	bool _credentialsRead = false;
 	bool _touchpadGestures = false;
-	size_t _virtualMonitors = 0;
+	std::atomic<size_t> _virtualMonitors{ 0 }; /* the window count, read by the render thread */
 };
