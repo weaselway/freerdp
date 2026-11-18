@@ -1284,6 +1284,92 @@ bool SdlContext::addDisplayWindow(SDL_DisplayID id)
 	return true;
 }
 
+/* What /sdl-windows needs, see preConnect; fullscreen as toggled now. */
+static bool sdl_can_change_windows(SdlContext* sdl)
+{
+	auto settings = sdl->context()->settings;
+	if (!freerdp_settings_get_bool(settings, FreeRDP_UseMultimon) && !sdl->fullscreen() &&
+	    !freerdp_settings_get_bool(settings, FreeRDP_RemoteApplicationMode) &&
+	    freerdp_settings_get_bool(settings, FreeRDP_DynamicResolutionUpdate))
+		return true;
+	WLog_Print(sdl->getWLog(), WLOG_WARN,
+	           "adding or removing windows needs /dynamic-resolution, and does not go with "
+	           "/multimon, fullscreen or /app");
+	return false;
+}
+
+bool SdlContext::addVirtualMonitor()
+{
+	if (!sdl_can_change_windows(this) || _windows.empty())
+		return true;
+	/* The server's limit, and the one of wwdisplay's per monitor messages. */
+	auto limit = getDisplayChannelContext().maxMonitors();
+	if ((limit == 0) || (limit > WWDISPLAY_MAX_MONITORS))
+		limit = WWDISPLAY_MAX_MONITORS;
+	if (_windows.size() >= limit)
+	{
+		WLog_Print(getWLog(), WLOG_WARN, "the server takes at most %" PRIu32 " monitors", limit);
+		return true;
+	}
+
+	/* The size of the newest window, right of it. */
+	auto last = _windows.rbegin()->second.window();
+	int x = 0;
+	int y = 0;
+	int w = 0;
+	int h = 0;
+	if (!SDL_GetWindowPosition(last, &x, &y) || !SDL_GetWindowSize(last, &w, &h))
+		return false;
+
+	Uint32 flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
+	if (!freerdp_settings_get_bool(context()->settings, FreeRDP_Decorations))
+		flags |= SDL_WINDOW_BORDERLESS;
+	const auto display = SDL_GetDisplayForWindow(last);
+	auto window = SdlWindow::create(display, windowTitle(), flags, static_cast<Uint32>(w),
+	                                static_cast<Uint32>(h), desktopPresenter());
+	if (!window.window())
+		return false;
+	/* Right of it, but not past the edge of its display. */
+	SDL_Rect bounds{};
+	auto nx = x + w;
+	if (SDL_GetDisplayUsableBounds(display, &bounds))
+		nx = std::max(bounds.x, std::min(nx, bounds.x + bounds.w - w));
+	std::ignore = SDL_SetWindowPosition(window.window(), nx, y);
+
+	{
+		RenderPause pause(this);
+		_windows.insert({ window.id(), std::move(window) });
+		_virtualMonitors = _windows.size();
+		if (!updateWindowList())
+			return false;
+	}
+	return setResizeable(resizeable()) && getDisplayChannelContext().addTimer();
+}
+
+bool SdlContext::removeVirtualMonitor(SDL_WindowID id)
+{
+	if (!sdl_can_change_windows(this))
+		return true;
+	if (_windows.size() < 2)
+	{
+		WLog_Print(getWLog(), WLOG_WARN, "not removing the last window");
+		return true;
+	}
+
+	{
+		RenderPause pause(this);
+		if (_windows.erase(id) == 0)
+			return true;
+		_virtualMonitors = _windows.size();
+		/* The single window layout does not set them. */
+		_windows.begin()->second.setOffsetX(0);
+		_windows.begin()->second.setOffsetY(0);
+		if (!updateWindowList())
+			return false;
+	}
+	return getDisplayChannelContext().addTimer();
+}
+
 bool SdlContext::removeDisplayWindow(SDL_DisplayID id)
 {
 	RenderPause pause(this);

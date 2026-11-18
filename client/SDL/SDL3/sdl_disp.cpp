@@ -531,6 +531,7 @@ UINT sdlDispContext::DisplayControlCaps(UINT32 maxNumMonitors, UINT32 maxMonitor
 	         " MaxMonitorAreaFactorB: %" PRIu32 "",
 	         maxNumMonitors, maxMonitorAreaFactorA, maxMonitorAreaFactorB);
 	_activated = true;
+	_maxMonitors = maxNumMonitors;
 
 	/* A new display channel means a new server instance, e.g. after a server redirection (GNOME
 	 * Remote Desktop hands the connection over from the login screen to the user session). It
