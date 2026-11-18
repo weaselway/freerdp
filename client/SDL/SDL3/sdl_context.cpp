@@ -2099,8 +2099,8 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 			const auto count = arg->Value ? strtoul(arg->Value, nullptr, 10) : 0;
 			if ((count < 1) || (count > WWDISPLAY_MAX_MONITORS))
 			{
-				WLog_ERR(CLIENT_TAG("SDL"), "Invalid /%s value '%s', expected 1 to %d",
-				         sdl_windows, arg->Value ? arg->Value : "", WWDISPLAY_MAX_MONITORS);
+				WLog_ERR(CLIENT_TAG("SDL"), "Invalid /%s value '%s', expected 1 to %d", sdl_windows,
+				         arg->Value ? arg->Value : "", WWDISPLAY_MAX_MONITORS);
 				return -2;
 			}
 			sdl->_virtualMonitors = count;
@@ -2241,13 +2241,12 @@ void SdlContext::renderThreadMain()
 		for (auto& window : _windows)
 		{
 			auto& w = window.second;
-			if (ackOwed && w.copyHandle() &&
-			    (handles.size() < MAXIMUM_WAIT_OBJECTS))
+			if (ackOwed && w.copyHandle() && (handles.size() < MAXIMUM_WAIT_OBJECTS))
 				handles.push_back(w.copyHandle());
 		}
 
-		const auto rc = WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(),
-		                                       FALSE, 1000);
+		const auto rc =
+		    WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE, 1000);
 		if (_renderStop)
 			break;
 		if ((rc > WAIT_OBJECT_0) && (rc < WAIT_OBJECT_0 + 1 + waiting.size()))

@@ -295,7 +295,7 @@ class SdlContext
 
 	void renderThreadMain();
 	std::thread _renderThread;
-	void* _renderWake = nullptr; /* Win32 event: work queued, or stop */
+	void* _renderWake = nullptr;              /* Win32 event: work queued, or stop */
 	std::atomic<bool> _renderActive{ false }; /* read by the channel threads */
 	std::atomic<bool> _renderStop{ false };
 	std::atomic<bool> _renderRedraw{ false };
@@ -357,8 +357,8 @@ class SdlContext
 	 * monitorIndex()). */
 	struct GfxRedirTarget
 	{
-		UINT64 bufferId = 0;          /* buffer of the newest present */
-		std::vector<SDL_Rect> dirty;  /* presented since the last upload */
+		UINT64 bufferId = 0;         /* buffer of the newest present */
+		std::vector<SDL_Rect> dirty; /* presented since the last upload */
 		std::vector<GfxRedirPending> pending;
 		/* Newest present whose pixels have been uploaded; everything older is
 		 * superseded and can be acked. 0 = nothing drawn yet. */
