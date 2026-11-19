@@ -2511,9 +2511,12 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	target.dirty.push_back(rect);
 
 	_gfxRedir = redir;
+	const auto queuedAtNS = SDL_GetTicksNS();
 	target.pending.push_back(
-	    { present->windowId, present->presentId, GetTickCount64(), SDL_GetTicksNS() });
-	SdlWindow::countFrameIn();
+	    { present->windowId, present->presentId, GetTickCount64(), queuedAtNS });
+	SdlWindow::countFrameIn(
+	    (target.lastQueuedAtNS != 0) ? queuedAtNS - target.lastQueuedAtNS : 0);
+	target.lastQueuedAtNS = queuedAtNS;
 	_gfxRedirQueueCount++;
 
 	const auto queueCount = _gfxRedirQueueCount;

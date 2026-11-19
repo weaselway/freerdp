@@ -809,6 +809,9 @@ static std::array<bool, SdlWindow::STAT_COUNT> s_frameHas;
 static Uint64 s_frameQueuedAt = 0;
 static Uint64 s_frameDropped = 0; /* replaced by the frame being drawn, never shown */
 static std::atomic<Uint64> s_framesIn{ 0 };
+/* Time between frames arriving, per sampling window; any thread. */
+static std::mutex s_arrivalLock;
+static std::vector<float> s_arrivalMs;
 
 /* Per sampling window: each frame's latency (queued -> presented), and of
  * the frames whose deadline is known, how many missed it. */
@@ -1102,10 +1105,17 @@ void SdlWindow::setFrameQueuedAt(Uint64 ns, Uint64 skipped)
 	s_frameDropped += skipped;
 }
 
-void SdlWindow::countFrameIn()
+void SdlWindow::countFrameIn(Uint64 intervalNs)
 {
-	if (s_showStats)
-		s_framesIn++;
+	if (!s_showStats)
+		return;
+	s_framesIn++;
+	/* shortcut: a gap over 100 ms counts as idle, not jitter; below 10 fps
+	 * nothing is measured. */
+	if ((intervalNs == 0) || (intervalNs > 100000000ull))
+		return;
+	std::unique_lock lock(s_arrivalLock);
+	s_arrivalMs.push_back(static_cast<float>(intervalNs) / 1e6f);
 }
 
 void SdlWindow::commitFrameStats(Uint64 intervalNs, int late)
@@ -1559,6 +1569,10 @@ void SdlWindow::syncStatsToggle()
 	s_frameHas.fill(false);
 	s_frameQueuedAt = 0;
 	s_framesIn = 0;
+	{
+		std::unique_lock lock(s_arrivalLock);
+		s_arrivalMs.clear();
+	}
 	s_latencyMs.clear();
 	s_lateFrames = 0;
 	s_deadlineFrames = 0;
@@ -1620,16 +1634,17 @@ bool SdlWindow::updateStats()
 		/* Latency from the frame's arrival to its present, and how many frames
 		 * missed the first vblank after they arrived, and how many were
 		 * replaced by a newer one before they were shown. */
+		const auto percentile = [](std::vector<float>& v, size_t p)
+		{
+			auto it = v.begin() + static_cast<std::ptrdiff_t>((v.size() - 1) * p / 100);
+			std::nth_element(v.begin(), it, v.end());
+			return static_cast<double>(*it);
+		};
 		std::string latency = "latency ms";
 		auto& v = s_latencyMs;
 		if (!v.empty())
 		{
-			const auto pct = [&v](size_t p)
-			{
-				auto it = v.begin() + static_cast<std::ptrdiff_t>((v.size() - 1) * p / 100);
-				std::nth_element(v.begin(), it, v.end());
-				return static_cast<double>(*it);
-			};
+			const auto pct = [&](size_t p) { return percentile(v, p); };
 			double sum = 0.0;
 			for (const auto ms : v)
 				sum += static_cast<double>(ms);
@@ -1661,6 +1676,27 @@ bool SdlWindow::updateStats()
 		}
 		_statsText.push_back(latency);
 		v.clear();
+
+		/* How evenly frames arrive: the median time between them, and how far
+		 * apart the 10th and 90th percentile are. */
+		std::vector<float> arrivals;
+		{
+			std::unique_lock lock(s_arrivalLock);
+			arrivals.swap(s_arrivalMs);
+		}
+		std::string arrival = "arrival interval ms";
+		if (!arrivals.empty())
+		{
+			const auto p10 = percentile(arrivals, 10);
+			const auto p50 = percentile(arrivals, 50);
+			const auto p90 = percentile(arrivals, 90);
+			(void)SDL_snprintf(buffer, sizeof(buffer), "  median %.2f  spread p10-p90 %.2f", p50,
+			                   p90 - p10);
+			arrival += buffer;
+		}
+		else
+			arrival += "  -";
+		_statsText.push_back(arrival);
 		s_lateFrames = 0;
 		s_deadlineFrames = 0;
 		s_droppedFrames = 0;

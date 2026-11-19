@@ -202,8 +202,9 @@ class SdlWindow
 	/* SDL_GetTicksNS() at which the frame about to be drawn was queued, and
 	 * how many frames that arrived since the last one drawn it replaces. */
 	void setFrameQueuedAt(Uint64 ns, Uint64 skipped);
-	/* Any thread: a frame arrived from the server. */
-	static void countFrameIn();
+	/* Any thread: a frame arrived from the server, intervalNs after the one
+	 * before for the same window, 0 for its first. */
+	static void countFrameIn(Uint64 intervalNs);
 
   protected:
 	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags,

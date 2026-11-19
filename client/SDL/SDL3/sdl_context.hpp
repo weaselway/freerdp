@@ -377,6 +377,7 @@ class SdlContext
 		/* Newest present whose pixels have been uploaded; everything older is
 		 * superseded and can be acked. 0 = nothing drawn yet. */
 		UINT64 drawnPresentId = 0;
+		Uint64 lastQueuedAtNS = 0; /* SDL_GetTicksNS() of the newest present */
 	};
 
 	std::map<UINT64, GfxRedirBuffer> _gfxRedirBuffers;
