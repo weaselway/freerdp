@@ -1064,6 +1064,116 @@ SDL_FRect SdlWindow::statsBox() const
 		     static_cast<float>(_statsText.size()) * s_statsLineHeight + 6.0f };
 }
 
+#if defined(_WIN32)
+/* Lines of white text on a rounded, translucent black box, as premultiplied
+ * BGRA32, with marginX/marginY of transparent space left of and above the
+ * box. Sizes are in points, times scale. GDI draws the text because SDL only
+ * has its 8px debug font. */
+static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const wchar_t* face,
+                                  float fontSize, float scale, float marginX, float marginY)
+{
+	const auto em = fontSize * scale;
+	const auto padX = static_cast<int>(std::lround(em * 1.3f));
+	const auto padY = static_cast<int>(std::lround(em * 0.65f));
+	const auto radius = std::round(em * 0.8f);
+	const auto left = static_cast<int>(std::lround(marginX * scale));
+	const auto top = static_cast<int>(std::lround(marginY * scale));
+
+	std::vector<std::wstring> wide;
+	for (const auto& line : lines)
+	{
+		const auto len =
+		    MultiByteToWideChar(CP_UTF8, 0, line.data(), static_cast<int>(line.size()), nullptr, 0);
+		auto& w = wide.emplace_back(static_cast<size_t>(std::max(len, 0)), L'\0');
+		(void)MultiByteToWideChar(CP_UTF8, 0, line.data(), static_cast<int>(line.size()), w.data(),
+		                          len);
+	}
+
+	auto dc = CreateCompatibleDC(nullptr);
+	if (!dc)
+		return nullptr;
+	/* Grayscale antialiasing: ClearType's colour fringes need an opaque
+	 * background to look right. */
+	auto font = CreateFontW(-static_cast<int>(std::lround(em)), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+	                        FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+	                        ANTIALIASED_QUALITY, DEFAULT_PITCH, face);
+	auto oldFont = SelectObject(dc, font);
+	int textW = 0;
+	int lineH = 0;
+	for (const auto& line : wide)
+	{
+		SIZE size = {};
+		(void)GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &size);
+		textW = std::max(textW, static_cast<int>(size.cx));
+		lineH = std::max(lineH, static_cast<int>(size.cy));
+	}
+	const int boxW = textW + 2 * padX;
+	const int boxH = lineH * static_cast<int>(wide.size()) + 2 * padY;
+	const int w = left + boxW;
+	const int h = top + boxH;
+
+	BITMAPINFO info = {};
+	info.bmiHeader.biSize = sizeof(info.bmiHeader);
+	info.bmiHeader.biWidth = w;
+	info.bmiHeader.biHeight = -h; /* top down */
+	info.bmiHeader.biPlanes = 1;
+	info.bmiHeader.biBitCount = 32;
+	info.bmiHeader.biCompression = BI_RGB;
+	void* bits = nullptr;
+	auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+	SDL_Surface* surface = nullptr;
+	if (bitmap && bits)
+	{
+		auto oldBitmap = SelectObject(dc, bitmap);
+		/* White on the black DIB: any channel is the text's coverage. */
+		(void)SetTextColor(dc, RGB(0xff, 0xff, 0xff));
+		(void)SetBkMode(dc, TRANSPARENT);
+		for (size_t x = 0; x < wide.size(); x++)
+			(void)TextOutW(dc, left + padX, top + padY + lineH * static_cast<int>(x),
+			               wide[x].c_str(), static_cast<int>(wide[x].size()));
+		(void)GdiFlush();
+
+		surface = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_BGRA32);
+		for (int y = 0; surface && (y < h); y++)
+		{
+			const auto src = static_cast<const Uint8*>(bits) + 4ll * w * y;
+			auto dst = static_cast<Uint8*>(surface->pixels) + 1ll * surface->pitch * y;
+			for (int x = 0; x < w; x++)
+			{
+				/* The box's coverage: distance from the pixel centre to the
+				 * box shrunk by the radius, antialiased over one pixel. */
+				const auto cx = static_cast<float>(x - left) + 0.5f;
+				const auto cy = static_cast<float>(y - top) + 0.5f;
+				const auto dx =
+				    std::max({ radius - cx, 0.0f, cx - static_cast<float>(boxW) + radius });
+				const auto dy =
+				    std::max({ radius - cy, 0.0f, cy - static_cast<float>(boxH) + radius });
+				const auto box =
+				    ((x < left) || (y < top))
+				        ? 0.0f
+				        : std::clamp(radius - std::sqrt(dx * dx + dy * dy) + 0.5f, 0.0f, 1.0f);
+				const auto ink = static_cast<float>(src[4 * x + 1]) / 255.0f;
+				const auto alpha = ink + 0.72f * box * (1.0f - ink);
+				const auto white = static_cast<Uint8>(std::lround(ink * 255.0f));
+				dst[4 * x + 0] = white;
+				dst[4 * x + 1] = white;
+				dst[4 * x + 2] = white;
+				dst[4 * x + 3] = static_cast<Uint8>(std::lround(alpha * 255.0f));
+			}
+		}
+		(void)SelectObject(dc, oldBitmap);
+	}
+
+	(void)SelectObject(dc, oldFont);
+	if (bitmap)
+		(void)DeleteObject(bitmap);
+	if (font)
+		(void)DeleteObject(font);
+	(void)DeleteDC(dc);
+	return surface;
+}
+#endif
+
 void SdlWindow::updatePresenterOverlay()
 {
 #if defined(_WIN32)
@@ -1071,30 +1181,15 @@ void SdlWindow::updatePresenterOverlay()
 		return;
 
 	/* The presenter has no text drawing of its own, so the overlay is drawn
-	 * into a surface with SDL's software renderer and handed over as a
-	 * texture. Only when the numbers change, i.e. twice a second. */
-	const auto scale = statsScale();
-	const auto box = statsBox();
-	const auto w = static_cast<int>(std::ceil((box.x + box.w) * scale));
-	const auto h = static_cast<int>(std::ceil((box.y + box.h) * scale));
-
+	 * into a surface and handed over as a texture. Only when the numbers
+	 * change, i.e. twice a second. The stats scale is relative to its default
+	 * of 2. */
 	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> surface(
-	    SDL_CreateSurface(w, h, SDL_PIXELFORMAT_BGRA32), SDL_DestroySurface);
-	if (!surface)
-		return;
-	std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer(
-	    SDL_CreateSoftwareRenderer(surface.get()), SDL_DestroyRenderer);
-	if (!renderer)
-		return;
-
-	if (!SDL_SetRenderDrawColor(renderer.get(), 0x00, 0x00, 0x00, 0x00) ||
-	    !SDL_RenderClear(renderer.get()) || !SDL_SetRenderScale(renderer.get(), scale, scale))
-		return;
-	renderStatsText(renderer.get());
-	if (!SDL_RenderPresent(renderer.get()))
-		return;
-
-	(void)_presenter->setOverlay(surface.get());
+	    renderTextBox(_statsText, L"Consolas", 6.5f * statsScale(),
+	                  SDL_GetWindowDisplayScale(_window), 8.0f, 8.0f),
+	    SDL_DestroySurface);
+	if (surface)
+		(void)_presenter->setOverlay(surface.get());
 #endif
 }
 
@@ -1200,7 +1295,7 @@ void SdlWindow::renderStatsText(SDL_Renderer* renderer)
 	    SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xc0))
 		(void)SDL_RenderFillRect(renderer, &box);
 
-	if (SDL_SetRenderDrawColor(renderer, 0x00, 0xff, 0x00, 0xff))
+	if (SDL_SetRenderDrawColor(renderer, 0xff, 0xff, 0xff, 0xff))
 	{
 		auto y = box.y + 4.0f;
 		for (const auto& text : _statsText)
