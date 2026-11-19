@@ -331,6 +331,9 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 						sdl->getRailChannelContext().handleLocalMoveRequested(id, moveType);
 					}
 					break;
+					case SDL_EVENT_USER_HIDE_NOTIFICATION:
+						sdl->hideNotification(static_cast<Uint32>(windowEvent.user.code));
+						break;
 					case SDL_EVENT_USER_QUIT:
 					default:
 						break;

@@ -85,6 +85,12 @@ class SdlContext
 	[[nodiscard]] bool toggleGrabKeyboard();
 	[[nodiscard]] bool setGrabKeyboard(bool enter);
 
+	/* Show text in every window, hidden after hideAfterMs if that is not 0 and
+	 * nothing else was shown since. hideNotification() is for the
+	 * SDL_EVENT_USER_HIDE_NOTIFICATION that timer sends. */
+	void notify(const std::string& text, Uint32 hideAfterMs);
+	void hideNotification(Uint32 serial);
+
 	[[nodiscard]] rdpContext* context() const;
 	[[nodiscard]] rdpClientContext* common() const;
 
@@ -307,6 +313,7 @@ class SdlContext
 	bool _resizeable = false;
 	bool _grabMouse = false;
 	bool _grabKeyboard = false;
+	Uint32 _notificationSerial = 0;
 
 	/* RemoteApp pointer state */
 	struct

@@ -68,6 +68,8 @@ class sdlInput
 	[[nodiscard]] static bool extract(const std::string& token, uint32_t& key, uint32_t& value);
 
 	[[nodiscard]] UINT32 scancode_to_rdp(Uint32 scancode);
+	/* The hotkey for scancode, for people: "Right Ctrl+Right Shift+G". */
+	[[nodiscard]] std::string hotkeyName(uint32_t scancode) const;
 
 	SdlContext* _sdl = nullptr;
 	Uint32 _lastWindowID = 0;

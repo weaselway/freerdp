@@ -182,9 +182,15 @@ struct SdlD3D11Presenter::Impl
 	ComPtr<ID3D11PixelShader> overlayPs;
 	ComPtr<ID3D11BlendState> overlayBlend;
 	ComPtr<ID3D11SamplerState> sampler;
-	ComPtr<ID3D11ShaderResourceView> overlayView;
-	int overlayW = 0;
-	int overlayH = 0;
+	struct Overlay
+	{
+		ComPtr<ID3D11ShaderResourceView> view;
+		int w = 0;
+		int h = 0;
+	};
+	Overlay overlay;
+	Overlay notification;
+	bool setOverlay(Overlay& target, SDL_Surface* surface);
 
 	/* Set when a call fails because the device is gone. Everything is
 	 * released and set up again, at most once a second. */
@@ -470,7 +476,8 @@ void SdlD3D11Presenter::Impl::release()
 	waitable = nullptr;
 
 	releaseZeroCopy();
-	overlayView.reset();
+	overlay.view.reset();
+	notification.view.reset();
 	frameView.reset();
 	frame.reset();
 	for (auto& texture : staging)
@@ -918,8 +925,18 @@ void* SdlD3D11Presenter::copyHandle() const
 
 bool SdlD3D11Presenter::setOverlay(SDL_Surface* surface)
 {
-	_impl->overlayView.reset();
-	if (!surface || _impl->lost)
+	return _impl->setOverlay(_impl->overlay, surface);
+}
+
+bool SdlD3D11Presenter::setNotification(SDL_Surface* surface)
+{
+	return _impl->setOverlay(_impl->notification, surface);
+}
+
+bool SdlD3D11Presenter::Impl::setOverlay(Overlay& target, SDL_Surface* surface)
+{
+	target.view.reset();
+	if (!surface || lost)
 		return true;
 
 	D3D11_TEXTURE2D_DESC desc = {};
@@ -936,15 +953,13 @@ bool SdlD3D11Presenter::setOverlay(SDL_Surface* surface)
 	data.SysMemPitch = static_cast<UINT>(surface->pitch);
 
 	ComPtr<ID3D11Texture2D> texture;
-	if (failed(_impl->device->CreateTexture2D(&desc, &data, texture.put()),
-	           "CreateTexture2D (overlay)"))
+	if (failed(device->CreateTexture2D(&desc, &data, texture.put()), "CreateTexture2D (overlay)"))
 		return false;
-	if (failed(_impl->device->CreateShaderResourceView(texture.get(), nullptr,
-	                                                   _impl->overlayView.put()),
+	if (failed(device->CreateShaderResourceView(texture.get(), nullptr, target.view.put()),
 	           "CreateShaderResourceView (overlay)"))
 		return false;
-	_impl->overlayW = surface->w;
-	_impl->overlayH = surface->h;
+	target.w = surface->w;
+	target.h = surface->h;
 	return true;
 }
 
@@ -997,20 +1012,25 @@ bool SdlD3D11Presenter::draw()
 	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
 	context->Draw(3, 0);
 
-	if (_impl->overlayView)
+	const auto drawOverlay = [&](const Impl::Overlay& overlay, int x)
 	{
-		viewport.TopLeftX = 0.0f;
+		if (!overlay.view)
+			return;
+		viewport.TopLeftX = static_cast<float>(x);
 		viewport.TopLeftY = 0.0f;
-		viewport.Width = static_cast<float>(_impl->overlayW);
-		viewport.Height = static_cast<float>(_impl->overlayH);
+		viewport.Width = static_cast<float>(overlay.w);
+		viewport.Height = static_cast<float>(overlay.h);
 		context->RSSetViewports(1, &viewport);
 
-		view = _impl->overlayView.get();
+		view = overlay.view.get();
 		context->PSSetShader(_impl->overlayPs.get(), nullptr, 0);
 		context->PSSetShaderResources(0, 1, &view);
 		context->OMSetBlendState(_impl->overlayBlend.get(), nullptr, 0xffffffff);
 		context->Draw(3, 0);
-	}
+	};
+	drawOverlay(_impl->overlay, 0);
+	drawOverlay(_impl->notification,
+	            std::max(0, (static_cast<int>(_impl->backW) - _impl->notification.w) / 2));
 	return true;
 }
 
