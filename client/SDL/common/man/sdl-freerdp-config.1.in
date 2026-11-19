@@ -196,4 +196,20 @@ A string as defined at
 \fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
 .RE
 .RE
+.PP
+\fISDL_Help\fR
+.RS 4
+.PP
+.RS 4
+Shows the most useful hotkeys for a few seconds\&.
+.br
+
+Default
+\fISDL_SCANCODE_H\fR\&.
+.br
+
+A string as defined at
+\fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
+.RE
+.RE
 .RE

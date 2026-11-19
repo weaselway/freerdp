@@ -1246,7 +1246,7 @@ static float roundedRectDistance(float px, float py, float x, float y, float w, 
  * premultiplied BGRA32. The box starts marginX/marginY from the top left,
  * or further if the shadow needs the room. Sizes are in points, times scale.
  * GDI draws the text because SDL only has its 8px debug font. colors tints
- * parts of lines (ASCII only). lineRects gets where each line's text went,
+ * parts of lines (ASCII only, not after a tab). lineRects gets where each line's text went,
  * for the caller to draw next to it; the box is as wide as the longest. */
 static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const wchar_t* face,
                                   float fontSize, float scale, float marginX, float marginY,
@@ -1284,13 +1284,36 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 	                        FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
 	                        ANTIALIASED_QUALITY, DEFAULT_PITCH, face);
 	auto oldFont = SelectObject(dc, font);
+	/* A tab lines up what follows it on all lines, like a table's second
+	 * column, one em right of the longest text before a tab. */
+	int tabX = 0;
+	for (const auto& line : wide)
+	{
+		SIZE size = {};
+		if (const auto tab = line.find(L'\t'); tab != std::wstring::npos)
+		{
+			(void)GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(tab), &size);
+			tabX = std::max(tabX, static_cast<int>(size.cx + std::lround(em)));
+		}
+	}
+	const auto split = [](const std::wstring& line)
+	{
+		const auto tab = line.find(L'\t');
+		return (tab == std::wstring::npos) ? std::pair{ line, std::wstring() }
+		                                   : std::pair{ line.substr(0, tab), line.substr(tab + 1) };
+	};
 	int textW = 0;
 	int lineH = 0;
 	std::vector<int> lineW;
 	for (const auto& line : wide)
 	{
 		SIZE size = {};
-		(void)GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &size);
+		const auto tab = line.find(L'\t');
+		const auto from = (tab == std::wstring::npos) ? 0 : tab + 1;
+		(void)GetTextExtentPoint32W(dc, line.c_str() + from, static_cast<int>(line.size() - from),
+		                            &size);
+		if (tab != std::wstring::npos)
+			size.cx += tabX;
 		lineW.push_back(static_cast<int>(size.cx));
 		textW = std::max(textW, static_cast<int>(size.cx));
 		lineH = std::max(lineH, static_cast<int>(size.cy));
@@ -1344,8 +1367,14 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 		(void)SetTextColor(dc, RGB(0xff, 0xff, 0xff));
 		(void)SetBkMode(dc, TRANSPARENT);
 		for (size_t x = 0; x < wide.size(); x++)
-			(void)TextOutW(dc, left + padX, top + padY + lineH * static_cast<int>(x),
-			               wide[x].c_str(), static_cast<int>(wide[x].size()));
+		{
+			const auto y = top + padY + lineH * static_cast<int>(x);
+			const auto [before, after] = split(wide[x]);
+			(void)TextOutW(dc, left + padX, y, before.c_str(), static_cast<int>(before.size()));
+			if (!after.empty())
+				(void)TextOutW(dc, left + padX + tabX, y, after.c_str(),
+				               static_cast<int>(after.size()));
+		}
 		(void)GdiFlush();
 
 		surface = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_BGRA32);
@@ -1502,8 +1531,17 @@ bool SdlWindow::setNotification([[maybe_unused]] const std::string& text,
 	_notificationText = text;
 	SDL_Surface* surface = nullptr;
 	if (!text.empty())
-		surface = renderTextBox({ text }, L"Segoe UI", fontSize,
-		                        SDL_GetWindowDisplayScale(_window), 0.0f, 16.0f, s_snackbarStyle);
+	{
+		std::vector<std::string> lines;
+		for (size_t at = 0; at <= text.size();)
+		{
+			const auto nl = std::min(text.find('\n', at), text.size());
+			lines.push_back(text.substr(at, nl - at));
+			at = nl + 1;
+		}
+		surface = renderTextBox(lines, L"Segoe UI", fontSize, SDL_GetWindowDisplayScale(_window),
+		                        0.0f, 16.0f, s_snackbarStyle);
+	}
 
 	std::unique_lock lock(_notificationLock);
 	_notification.reset(surface);
