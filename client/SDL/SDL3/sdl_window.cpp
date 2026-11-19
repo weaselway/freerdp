@@ -1247,12 +1247,13 @@ static float roundedRectDistance(float px, float py, float x, float y, float w, 
  * or further if the shadow needs the room. Sizes are in points, times scale.
  * GDI draws the text because SDL only has its 8px debug font. colors tints
  * parts of lines (ASCII only, not after a tab). lineRects gets where each line's text went,
- * for the caller to draw next to it; the box is as wide as the longest. */
+ * for the caller to draw next to it; the box is as wide as the longest, or
+ * minTextW. */
 static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const wchar_t* face,
                                   float fontSize, float scale, float marginX, float marginY,
                                   const BoxStyle& style,
                                   const std::vector<SdlTextColor>& colors = {},
-                                  std::vector<SDL_Rect>* lineRects = nullptr)
+                                  std::vector<SDL_Rect>* lineRects = nullptr, int minTextW = 0)
 {
 	const auto em = fontSize * scale;
 	const auto padX = static_cast<int>(std::lround(em * style.padX));
@@ -1318,6 +1319,7 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 		textW = std::max(textW, static_cast<int>(size.cx));
 		lineH = std::max(lineH, static_cast<int>(size.cy));
 	}
+	textW = std::max(textW, minTextW);
 	const int textH = lineH * static_cast<int>(wide.size());
 	const int boxW = textW + 2 * padX;
 	const int boxH = textH + 2 * padY;
@@ -1474,7 +1476,7 @@ static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float r
 		};
 		const auto mark = [&](Uint32 rgb)
 		{
-			for (int r = 0; r < std::min(barW, g.h); r++)
+			for (int r = 0; r < std::max(g.h / 16, 1); r++)
 				for (int x = x0; x < x1; x++)
 					put(x, g.y + r, rgb, 1.0f);
 		};
@@ -1589,17 +1591,24 @@ void SdlWindow::updatePresenterOverlay()
 		colors.push_back({ lines.size() - 1, marked, marked + 6, s_droppedColor });
 	}
 	std::vector<SDL_Rect> rects;
-	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> surface(
-	    renderTextBox(lines, L"Consolas", fontSize, scale, 8.0f, 8.0f, s_cardStyle, colors, &rects),
-	    SDL_DestroySurface);
+	const auto render = [&](int minTextW)
+	{
+		return std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>(
+		    renderTextBox(lines, L"Consolas", fontSize, scale, 8.0f, 8.0f, s_cardStyle, colors,
+		                  &rects, minTextW),
+		    SDL_DestroySurface);
+	};
+	auto surface = render(0);
 	if (!surface)
 		return;
 	if (withGraphs && (rects.size() == lines.size()))
 	{
 		/* Right of the stage table, the last lines of _statsText, which is
-		 * also the graphs' legend; as wide as the longest line allows. */
+		 * also the graphs' legend. The card widens to fit all of the history,
+		 * as far as the window allows. */
 		const auto first = _statsText.size() - STAT_COUNT - 1;
 		const auto gap = static_cast<int>(std::lround(em / 2.0f));
+		const auto barW = std::max(1, static_cast<int>(std::lround(em / 6.0f)));
 		int tableRight = 0;
 		int textRight = 0;
 		for (size_t x = 0; x < rects.size(); x++)
@@ -1608,12 +1617,23 @@ void SdlWindow::updatePresenterOverlay()
 			if ((x >= first) && (x < _statsText.size()))
 				tableRight = std::max(tableRight, rects[x].x + rects[x].w);
 		}
+		int winW = 0;
+		(void)SDL_GetWindowSizeInPixels(_window, &winW, nullptr);
+		const auto left = rects.front().x;
+		const auto wantRight =
+		    std::min(tableRight + 2 * gap + static_cast<int>(s_history.size()) * barW, winW - left);
+		if (wantRight > textRight)
+		{
+			surface = render(wantRight - left);
+			if (!surface)
+				return;
+			textRight = wantRight;
+		}
 		const auto& top = rects[first];
 		const SDL_Rect graphs = { tableRight + 2 * gap, top.y, textRight - tableRight - 2 * gap,
 			                      top.h * static_cast<int>(STAT_COUNT + 1) };
 		if (graphs.w > 0)
-			drawStatsGraphs(surface.get(), graphs,
-			                std::max(1, static_cast<int>(std::lround(em / 4.0f))), gap, periodMs);
+			drawStatsGraphs(surface.get(), graphs, barW, gap, periodMs);
 	}
 	(void)_presenter->setOverlay(surface.get());
 #endif
