@@ -164,4 +164,20 @@ A string as defined at
 \fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
 .RE
 .RE
+.PP
+\fISDL_Stats\fR
+.RS 4
+.PP
+.RS 4
+Shows and hides the /sdl-show-stats overlay\&.
+.br
+
+Default
+\fISDL_SCANCODE_A\fR\&.
+.br
+
+A string as defined at
+\fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
+.RE
+.RE
 .RE
