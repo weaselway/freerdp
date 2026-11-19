@@ -621,7 +621,13 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyGrab));
 				if (!keyboard_sync_state())
 					return false;
-				return keyboard_grab(ev.windowID, !_sdl->grabKeyboard());
+				const auto rc = keyboard_grab(ev.windowID, !_sdl->grabKeyboard());
+				const auto key = hotkeyName(_hotkeyGrab);
+				_sdl->notify(_sdl->grabKeyboard()
+				                 ? "Keyboard captured. Press " + key + " to release."
+				                 : "Keyboard released. Press " + key + " to capture.",
+				             2000);
+				return rc;
 			}
 			if (ev.scancode == _hotkeyDisconnect)
 			{
@@ -695,6 +701,28 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 	}
 	return freerdp_input_send_keyboard_event_ex(_sdl->context()->input,
 	                                            ev.type == SDL_EVENT_KEY_DOWN, ev.repeat, scancode);
+}
+
+std::string sdlInput::hotkeyName(uint32_t scancode) const
+{
+	/* Like "Right Ctrl+Right Shift+G". */
+	static const std::array<std::pair<SDL_Keymod, SDL_Scancode>, 8> mods = { {
+		{ SDL_KMOD_LCTRL, SDL_SCANCODE_LCTRL },
+		{ SDL_KMOD_RCTRL, SDL_SCANCODE_RCTRL },
+		{ SDL_KMOD_LSHIFT, SDL_SCANCODE_LSHIFT },
+		{ SDL_KMOD_RSHIFT, SDL_SCANCODE_RSHIFT },
+		{ SDL_KMOD_LALT, SDL_SCANCODE_LALT },
+		{ SDL_KMOD_RALT, SDL_SCANCODE_RALT },
+		{ SDL_KMOD_LGUI, SDL_SCANCODE_LGUI },
+		{ SDL_KMOD_RGUI, SDL_SCANCODE_RGUI },
+	} };
+	std::string name;
+	for (const auto& [mod, code] : mods)
+	{
+		if ((_hotkeyModmask & mod) != 0)
+			name += std::string(SDL_GetScancodeName(code)) + "+";
+	}
+	return name + SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode));
 }
 
 bool sdlInput::keyboard_grab(Uint32 windowID, bool enable)

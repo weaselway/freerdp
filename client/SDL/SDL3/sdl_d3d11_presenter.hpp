@@ -101,6 +101,8 @@ class SdlD3D11Presenter
 	/* A BGRA32 surface with premultiplied alpha drawn over the top left
 	 * corner from the next draw() on; nullptr removes it. */
 	[[nodiscard]] bool setOverlay(SDL_Surface* surface);
+	/* The same, centered at the top edge. */
+	[[nodiscard]] bool setNotification(SDL_Surface* surface);
 
 	/* True once after the device was lost and set up again: the desktop
 	 * texture is empty and needs a full upload. */

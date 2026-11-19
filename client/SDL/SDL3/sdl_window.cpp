@@ -125,7 +125,10 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
       _gdiTexture(other._gdiTexture), _gdiTextureW(other._gdiTextureW),
       _gdiTextureH(other._gdiTextureH), _initialW(other._initialW), _initialH(other._initialH),
       _displayID(other._displayID), _offset_x(other._offset_x), _offset_y(other._offset_y),
-      _monitor(other._monitor), _monitorIndex(other._monitorIndex.load())
+      _monitor(other._monitor), _monitorIndex(other._monitorIndex.load()),
+      _notificationText(std::move(other._notificationText)),
+      _notification(std::move(other._notification)),
+      _notificationChanged(other._notificationChanged)
 {
 	other._window = nullptr;
 	other._renderer = nullptr;
@@ -883,6 +886,11 @@ void SdlWindow::presenterPresent()
 
 	_presentPending = false;
 	_presentSlot = false;
+	{
+		std::unique_lock lock(_notificationLock);
+		if (_notificationChanged && _presenter->setNotification(_notification.get()))
+			_notificationChanged = false;
+	}
 	if (!_presenter->draw())
 		return;
 	const auto presentStart = SDL_GetTicksNS();
@@ -969,8 +977,13 @@ void SdlWindow::recordPresentTiming()
 bool SdlWindow::takeRedrawRequest()
 {
 #if defined(_WIN32)
-	if (_presenter)
-		return _presenter->takeRedrawRequest();
+	if (_presenter && _presenter->takeRedrawRequest())
+	{
+		/* It lost the notification with its device. */
+		std::unique_lock lock(_notificationLock);
+		_notificationChanged = true;
+		return true;
+	}
 #endif
 	return false;
 }
@@ -1181,6 +1194,29 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 	return surface;
 }
 #endif
+
+/* shortcut: only the Windows presenter draws notifications; the SDL renderer
+ * path (RemoteApp, other platforms) would need its own drawing and a way to
+ * present without a new frame. */
+bool SdlWindow::setNotification([[maybe_unused]] const std::string& text)
+{
+#if defined(_WIN32)
+	if (!_presenter || (text == _notificationText))
+		return false;
+	_notificationText = text;
+	SDL_Surface* surface = nullptr;
+	if (!text.empty())
+		surface = renderTextBox({ text }, L"Segoe UI", 15.0f, SDL_GetWindowDisplayScale(_window),
+		                        0.0f, 16.0f);
+
+	std::unique_lock lock(_notificationLock);
+	_notification.reset(surface);
+	_notificationChanged = true;
+	return true;
+#else
+	return false;
+#endif
+}
 
 void SdlWindow::updatePresenterOverlay()
 {

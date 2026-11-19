@@ -22,6 +22,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -164,6 +165,10 @@ class SdlWindow
 	 * stderr goes nowhere when started from WSL. Turns the stats on. */
 	static bool setStatsLog(const char* path);
 
+	/* A notification centered at the top; empty text hides it. SDL thread.
+	 * Shows from the next present, so ask for a redraw when this returns true.
+	 * Only the presenter draws it. */
+	[[nodiscard]] bool setNotification(const std::string& text);
 
 	/* Where a frame's time goes, in the order the stages run. Each is summed
 	 * over one frame (a frame can be several blits) and shown by the stats
@@ -282,4 +287,13 @@ class SdlWindow
 	Sint32 _offset_y = 0;
 	rdpMonitor _monitor{};
 	std::atomic<UINT16> _monitorIndex = 0; /* read by the render thread */
+
+	std::string _notificationText; /* SDL thread */
+	/* Handed to the presenter on the render thread. Kept to set it again after
+	 * the presenter lost its device. */
+	std::mutex _notificationLock;
+	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> _notification{
+		nullptr, SDL_DestroySurface
+	};
+	bool _notificationChanged = false;
 };

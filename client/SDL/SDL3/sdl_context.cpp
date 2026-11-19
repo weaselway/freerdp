@@ -3034,6 +3034,37 @@ bool SdlContext::setGrabKeyboard(bool enter)
 	return true;
 }
 
+void SdlContext::notify(const std::string& text, Uint32 hideAfterMs)
+{
+	const auto serial = ++_notificationSerial;
+	bool changed = false;
+	for (auto& window : _windows)
+		changed |= window.second.setNotification(text);
+	if (changed)
+		requestRedraw();
+	if (hideAfterMs == 0)
+		return;
+
+	/* The serial, not this, goes to the timer thread. */
+	const auto hide = [](void* userdata, SDL_TimerID, Uint32) -> Uint32
+	{
+		SDL_Event ev = {};
+		ev.type = SDL_EVENT_USER_HIDE_NOTIFICATION;
+		ev.user.code = static_cast<Sint32>(reinterpret_cast<uintptr_t>(userdata));
+		(void)SDL_PushEvent(&ev);
+		return 0;
+	};
+	if (SDL_AddTimer(hideAfterMs, hide, reinterpret_cast<void*>(static_cast<uintptr_t>(serial))) ==
+	    0)
+		WLog_Print(getWLog(), WLOG_WARN, "SDL_AddTimer failed: %s", SDL_GetError());
+}
+
+void SdlContext::hideNotification(Uint32 serial)
+{
+	if (serial == _notificationSerial)
+		notify({}, 0);
+}
+
 bool SdlContext::setResizeable(bool enable)
 {
 	const auto settings = context()->settings;
