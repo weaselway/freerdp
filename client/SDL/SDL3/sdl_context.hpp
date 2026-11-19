@@ -225,6 +225,8 @@ class SdlContext
 	[[nodiscard]] bool moveMouseTo(const SDL_FPoint& pos);
 
 	[[nodiscard]] SDL_FPoint screenToPixel(SDL_WindowID id, const SDL_FPoint& pos);
+	/* Window pixels -> desktop pixels, for a window in getWindowForId(). */
+	void applyMonitorOffset(SDL_WindowID window, float& x, float& y) const;
 
 	[[nodiscard]] SDL_FPoint pixelToScreen(SDL_WindowID id, const SDL_FPoint& pos);
 	[[nodiscard]] SDL_FRect pixelToScreen(SDL_WindowID id, const SDL_FRect& pos,
@@ -285,8 +287,6 @@ class SdlContext
 	[[nodiscard]] int sdl_client_thread_run(std::string& error_msg);
 
 	[[nodiscard]] int error_info_to_error(DWORD* pcode, char** msg, size_t* len) const;
-
-	void applyMonitorOffset(SDL_WindowID window, float& x, float& y) const;
 
 	[[nodiscard]] std::vector<SDL_DisplayID>
 	updateDisplayOffsetsForNeighbours(SDL_DisplayID id,

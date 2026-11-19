@@ -343,8 +343,15 @@ bool sdlInput::keyboard_focus_in()
 	float fy = 0.0f;
 	SDL_GetMouseState(&fx, &fy);
 
-	auto w = SDL_GetMouseFocus();
-	const auto& pos = _sdl->screenToPixel(SDL_GetWindowID(w), SDL_FPoint{ fx, fy });
+	/* Only for a window that has the pointer: after a fast move it may have
+	 * left the window this event is for, and no window means no position,
+	 * which was sent as 0,0 and opened GNOME's overview at the hot corner. */
+	const auto id = SDL_GetWindowID(SDL_GetMouseFocus());
+	auto pos = _sdl->screenToPixel(id, SDL_FPoint{ fx, fy });
+	if (_sdl->getWindowForId(id))
+		_sdl->applyMonitorOffset(id, pos.x, pos.y);
+	else if (!_sdl->getRailChannelContext().ownsWindow(id))
+		return true;
 
 	return freerdp_client_send_button_event(_sdl->common(), FALSE, PTR_FLAGS_MOVE,
 	                                        static_cast<Sint32>(pos.x), static_cast<Sint32>(pos.y));
