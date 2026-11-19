@@ -122,6 +122,14 @@ void SdlWin32VBlank::vblank(int64_t qpc)
 		_outliers++;
 }
 
+int32_t SdlWin32VBlank::periodUs()
+{
+	std::scoped_lock lock(_lock);
+	if (_period == 0 || _freq == 0)
+		return -1;
+	return static_cast<int32_t>(_period * 1000000 / _freq);
+}
+
 int32_t SdlWin32VBlank::slackUs(int64_t qpc)
 {
 	std::scoped_lock lock(_lock);

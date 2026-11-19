@@ -34,6 +34,15 @@
 class SdlD3D11Presenter;
 class SdlWin32VBlank;
 
+/* Characters [begin, end) of a text line drawn in a colour (0xRRGGBB). */
+struct SdlTextColor
+{
+	size_t line;
+	size_t begin;
+	size_t end;
+	Uint32 rgb;
+};
+
 class SdlWindow
 {
   public:
@@ -225,7 +234,16 @@ class SdlWindow
 
 	[[nodiscard]] static bool showDamage();
 	[[nodiscard]] static bool vsync();
-	static void commitFrameStats();
+	/* Folds the frame's stage times into the stats. intervalNs is the time
+	 * since the window's previous present; late is 1 if the frame missed its
+	 * vblank, 0 if not, -1 if unknown. */
+	static void commitFrameStats(Uint64 intervalNs, int late);
+	/* See commitFrameStats(). */
+	[[nodiscard]] int missedVBlank(Uint64 queuedNs, Uint64 nowNs);
+	[[nodiscard]] Uint64 frameInterval(Uint64 nowNs);
+	/* The monitor's vblank, created on first use; nullptr if unknown. */
+	[[nodiscard]] SdlWin32VBlank* vblank();
+	Uint64 _lastPresentNs = 0;
 	[[nodiscard]] static float statsScale();
 
 	/* Draws the overlay onto the backbuffer. Call with the render target unset
@@ -266,6 +284,7 @@ class SdlWindow
 	};
 	std::array<UploadStat, 2> _statsUploads{};
 	std::vector<std::string> _statsText; /* last formatted result, redrawn every frame */
+	std::vector<SdlTextColor> _statsColors; /* parts of _statsText in a colour */
 
 	std::unique_ptr<SdlD3D11Presenter> _presenter;
 	bool _presentPending = false; /* uploaded, not presented yet */
