@@ -42,6 +42,8 @@ class SdlWin32VBlank
 	/* How long after the QueryPerformanceCounter() time @qpc the monitor's
 	 * next vblank is, in microseconds. In (0, one refresh]; -1 if unknown. */
 	[[nodiscard]] int32_t slackUs(int64_t qpc);
+	/* One refresh in microseconds; -1 if unknown. */
+	[[nodiscard]] int32_t periodUs();
 
   private:
 	void run();
