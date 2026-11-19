@@ -148,7 +148,8 @@ class SdlWindow
 
 	/* /sdl-show-stats[:<scale>]: draw a counter overlay in the top left corner.
 	 * The scale, if > 0, is the text scale; the built-in debug font is 8px,
-	 * which is unreadable on a HiDPI panel. Process wide. */
+	 * which is unreadable on a HiDPI panel. Process wide; the stats hotkey
+	 * toggles it from the SDL thread. */
 	static void setShowStats(bool enable, float scale = 2.0f);
 	[[nodiscard]] static bool showStats();
 
@@ -236,6 +237,9 @@ class SdlWindow
 	void renderStatsText(SDL_Renderer* renderer);
 	[[nodiscard]] SDL_FRect statsBox() const;
 	void updatePresenterOverlay();
+	/* Follows setShowStats() from the drawing thread. */
+	void syncStatsToggle();
+	bool _statsOn = false;
 
 	[[nodiscard]] bool presenterUpload(SDL_Surface* surface, SDL_Point offset,
 	                                   const SDL_FPoint& scale, const std::vector<SDL_Rect>& rects);

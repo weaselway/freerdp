@@ -663,6 +663,15 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 					return false;
 				return _sdl->removeVirtualMonitor(ev.windowID);
 			}
+			if (ev.scancode == _hotkeyStats)
+			{
+				WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s+<%s> pressed, toggling stats overlay",
+				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyStats));
+				/* 0 keeps the /sdl-show-stats text scale. */
+				SdlWindow::setShowStats(!SdlWindow::showStats(), 0.0f);
+				_sdl->requestRedraw();
+				return keyboard_sync_state();
+			}
 		}
 	}
 
@@ -774,6 +783,7 @@ sdlInput::sdlInput(SdlContext* sdl)
 	_hotkeyMinimize = prefKeyValue("SDL_Minimize", SDL_SCANCODE_M);
 	_hotkeyAddMonitor = prefKeyValue("SDL_AddMonitor", SDL_SCANCODE_N);
 	_hotkeyRemoveMonitor = prefKeyValue("SDL_RemoveMonitor", SDL_SCANCODE_X);
+	_hotkeyStats = prefKeyValue("SDL_Stats", SDL_SCANCODE_A);
 }
 
 sdlInput::~sdlInput()

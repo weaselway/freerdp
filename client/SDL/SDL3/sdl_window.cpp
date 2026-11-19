@@ -771,7 +771,7 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 /* Set from the command line before the first window is created, read from the
  * SDL thread only. */
 static bool s_showDamage = false;
-static bool s_showStats = false;
+static std::atomic<bool> s_showStats{ false }; /* the hotkey toggles it */
 static float s_statsScale = 2.0f;
 static const float s_statsLineHeight = static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 2.0f;
 static bool s_vsync = true;
@@ -1007,7 +1007,10 @@ void SdlWindow::addStat(StatStage stage, Uint64 ns)
 
 void SdlWindow::setFrameQueuedAt(Uint64 ns)
 {
-	s_frameQueuedAt = ns;
+	/* Only commitFrameStats() clears it, so a value from before the stats were
+	 * turned on would count as the first frame's latency. */
+	if (s_showStats)
+		s_frameQueuedAt = ns;
 }
 
 void SdlWindow::countFrameIn()
@@ -1237,6 +1240,37 @@ void SdlWindow::updatePresenterOverlay()
 #endif
 }
 
+void SdlWindow::syncStatsToggle()
+{
+	const bool on = showStats();
+	if (on == _statsOn)
+		return;
+	_statsOn = on;
+
+	/* Counted before the toggle, or not at all while off. */
+	_statsWindowStart = 0;
+	_statsFrames = 0;
+	_statsBlits = 0;
+	_statsBytes = 0;
+	_statsUploads.fill({});
+	s_stages.fill({});
+	s_frame.fill(0);
+	s_frameHas.fill(false);
+	s_frameQueuedAt = 0;
+	s_framesIn = 0;
+	/* Something to show until the first numbers, half a second of frames
+	 * later; an idle desktop sends none. */
+	_statsText.clear();
+	if (on)
+		_statsText.emplace_back("stats: waiting for frames");
+#if defined(_WIN32)
+	if (_presenter && on)
+		updatePresenterOverlay();
+	else if (_presenter)
+		(void)_presenter->setOverlay(nullptr);
+#endif
+}
+
 bool SdlWindow::updateStats()
 {
 	const auto now = SDL_GetTicksNS();
@@ -1359,6 +1393,7 @@ void SdlWindow::updateSurface()
 	 * frame, which is exactly what this is meant to show is not happening. */
 	const auto damage = std::move(_damageRects);
 	_damageRects.clear();
+	syncStatsToggle();
 
 	if (_presenter)
 	{
