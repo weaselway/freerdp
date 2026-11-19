@@ -1230,7 +1230,11 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 			if (presentId != target->drawnPresentId)
 			{
 				const auto queuedAt = target->pending.back().queuedAtNS;
-				SdlWindow::setFrameQueuedAt(queuedAt);
+				const auto skipped = std::count_if(
+				    target->pending.begin(), target->pending.end(),
+				    [target, presentId](const GfxRedirPending& p)
+				    { return (p.presentId > target->drawnPresentId) && (p.presentId < presentId); });
+				window.setFrameQueuedAt(queuedAt, static_cast<Uint64>(skipped));
 				SdlWindow::addStat(SdlWindow::STAT_WAIT, lockStart - queuedAt);
 			}
 			target->drawnPresentId = presentId;
