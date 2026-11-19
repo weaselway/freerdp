@@ -1373,10 +1373,10 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 
 /* One bar per frame in g, newest on the right, ms from 0 to rangeMs; longer
  * times stop at the top. value gives a bar's segments bottom up as
- * (ms, colour) through add. A line at 60 Hz. */
+ * (ms, colour, alpha) through add. A line at each refresh period. */
 template <typename Value>
 static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float rangeMs,
-                      Value value)
+                      float periodMs, Value value)
 {
 	const auto put = [surface](int x, int y, Uint32 rgb, float a)
 	{
@@ -1403,35 +1403,49 @@ static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float r
 		/* A gap between bars once they are wide enough. */
 		const int x1 = x0 + ((barW > 2) ? barW - 1 : barW);
 		float sum = 0.0f;
-		const auto add = [&](float ms, Uint32 rgb)
+		const auto add = [&](float ms, Uint32 rgb, float a)
 		{
 			const int from = rows(sum);
 			sum += ms;
 			for (int r = from; r < rows(sum); r++)
 				for (int x = x0; x < x1; x++)
-					put(x, g.y + g.h - 1 - r, rgb, 1.0f);
+					put(x, g.y + g.h - 1 - r, rgb, a);
 		};
 		value(frame, add);
 	}
-	const int r = std::max(rows(1000.0f / 60.0f), 1);
-	for (int x = g.x; x < g.x + g.w; x++)
-		put(x, g.y + g.h - r, 0xffffff, 0.35f);
+	for (int k = 1; static_cast<float>(k) * periodMs < rangeMs * 0.99f; k++)
+	{
+		const int r = std::max(rows(static_cast<float>(k) * periodMs), 1);
+		for (int x = g.x; x < g.x + g.w; x++)
+			put(x, g.y + g.h - r, 0xffffff, 0.35f);
+	}
 }
 
 /* Two graphs, one bar per frame: the stages stacked in their colours, in red
- * for a late frame, and below the time since the frame before. */
-static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW, int gap)
+ * for a late frame, and below the time since the frame before. Scaled to the
+ * monitor's refresh period, so a steady frame rate looks the same at any
+ * rate. A gap longer than the graph is idle and only a faint stub. */
+static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW, int gap,
+                            float periodMs)
 {
 	const int stagesH = (area.h - gap) * 2 / 3;
-	drawGraph(surface, { area.x, area.y, area.w, stagesH }, barW, 1000.0f / 30.0f,
+	drawGraph(surface, { area.x, area.y, area.w, stagesH }, barW, 2.0f * periodMs, periodMs,
 	          [](const FrameSample& frame, const auto& add)
 	          {
 		          for (size_t st = 0; st < SdlWindow::STAT_TOTAL; st++)
-			          add(frame.ms[st], frame.late ? s_lateColor : s_stageColors[st]);
+			          add(frame.ms[st], frame.late ? s_lateColor : s_stageColors[st], 1.0f);
 	          });
+	const auto rangeMs = 3.0f * periodMs;
 	drawGraph(surface, { area.x, area.y + stagesH + gap, area.w, area.h - stagesH - gap }, barW,
-	          50.0f, [](const FrameSample& frame, const auto& add)
-	          { add(frame.intervalMs, frame.late ? s_lateColor : 0x938f99); });
+	          rangeMs, periodMs,
+	          [rangeMs](const FrameSample& frame, const auto& add)
+	          {
+		          const auto rgb = frame.late ? s_lateColor : 0x938f99;
+		          if (frame.intervalMs > rangeMs)
+			          add(rangeMs / 8.0f, rgb, 0.3f);
+		          else
+			          add(frame.intervalMs, rgb, 1.0f);
+	          });
 }
 #endif
 
@@ -1476,10 +1490,17 @@ void SdlWindow::updatePresenterOverlay()
 	auto colors = _statsColors;
 	SDL_Rect graphs = {};
 	int graphsH = 0;
+	/* 60 Hz until the vblank thread has measured the monitor. */
+	const auto periodUs = vblank() ? _vblank->periodUs() : -1;
+	const auto periodMs = (periodUs > 0) ? static_cast<float>(periodUs) / 1000.0f : 1000.0f / 60.0f;
 	if (_statsText.size() > 1)
 	{
-		lines.emplace_back("graphs per frame: stage times (0-33 ms), time since the frame before "
-		                   "(0-50 ms); line at 60 Hz, late in red");
+		char legend[200] = { 0 };
+		(void)SDL_snprintf(legend, sizeof(legend),
+		                   "graphs per frame: stage times (0-%.0f ms), time since the frame before "
+		                   "(0-%.0f ms, longer is idle); lines at %.0f Hz, late in red",
+		                   2.0 * periodMs, 3.0 * periodMs, 1000.0 / periodMs);
+		lines.emplace_back(legend);
 		colors.push_back(
 		    { lines.size() - 1, lines.back().size() - 3, lines.back().size(), s_lateColor });
 		graphsH = static_cast<int>(std::lround(em * 12.0f));
@@ -1493,7 +1514,7 @@ void SdlWindow::updatePresenterOverlay()
 	if (graphsH > 0)
 		drawStatsGraphs(surface.get(), graphs,
 		                std::max(1, static_cast<int>(std::lround(em / 4.0f))),
-		                static_cast<int>(std::lround(em / 2.0f)));
+		                static_cast<int>(std::lround(em / 2.0f)), periodMs);
 	(void)_presenter->setOverlay(surface.get());
 #endif
 }
