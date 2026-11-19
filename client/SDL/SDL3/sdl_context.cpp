@@ -1188,7 +1188,7 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 	const auto lockStart = SDL_GetTicksNS();
 	std::unique_lock lock(_critical);
 	const auto lockDone = SDL_GetTicksNS();
-	SdlWindow::addStat(SdlWindow::STAT_LOCK, lockDone - lockStart);
+	window.addStat(SdlWindow::STAT_LOCK, lockDone - lockStart);
 
 	/* While gfxredir drives the output the pixels live in the server's shared
 	 * memory, so upload from there instead of the gdi primary buffer. Each
@@ -1202,6 +1202,8 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 			target = &t->second;
 			surface = b->second.surface.get();
 		}
+		window.countFramesIn(t->second.arrivalsNS);
+		t->second.arrivalsNS.clear();
 	}
 	const bool fromSharedMemory = (target != nullptr);
 
@@ -1235,7 +1237,7 @@ bool SdlContext::uploadToWindow(SdlWindow& window, const std::vector<SDL_Rect>& 
 				    [target, presentId](const GfxRedirPending& p)
 				    { return (p.presentId > target->drawnPresentId) && (p.presentId < presentId); });
 				window.setFrameQueuedAt(queuedAt, static_cast<Uint64>(skipped));
-				SdlWindow::addStat(SdlWindow::STAT_WAIT, lockStart - queuedAt);
+				window.addStat(SdlWindow::STAT_WAIT, lockStart - queuedAt);
 			}
 			target->drawnPresentId = presentId;
 		}
@@ -2303,7 +2305,9 @@ void SdlContext::renderThreadMain()
 		ackOwed = false;
 		const auto ackStart = SDL_GetTicksNS();
 		gfxRedirCompletePresent();
-		SdlWindow::addStat(SdlWindow::STAT_ACK, SDL_GetTicksNS() - ackStart);
+		const auto ackNs = SDL_GetTicksNS() - ackStart;
+		for (auto& window : _windows)
+			window.second.addAckStat(ackNs);
 	};
 
 	while (!_renderStop)
@@ -2560,8 +2564,11 @@ bool SdlContext::gfxRedirQueuePresent(GfxRedirClientContext* redir,
 	const auto queuedAtNS = SDL_GetTicksNS();
 	target.pending.push_back(
 	    { present->windowId, present->presentId, GetTickCount64(), queuedAtNS });
-	SdlWindow::countFrameIn(
-	    (target.lastQueuedAtNS != 0) ? queuedAtNS - target.lastQueuedAtNS : 0);
+	/* shortcut: capped, as a target no window draws never hands them over;
+	 * frames past the cap between two uploads go uncounted. */
+	if (SdlWindow::showStats() && (target.arrivalsNS.size() < 1024))
+		target.arrivalsNS.push_back(
+		    (target.lastQueuedAtNS != 0) ? queuedAtNS - target.lastQueuedAtNS : 0);
 	target.lastQueuedAtNS = queuedAtNS;
 	_gfxRedirQueueCount++;
 
@@ -2727,7 +2734,9 @@ bool SdlContext::drawToWindows(const std::vector<SDL_Rect>& rects)
 	 * hand them back before waiting for vsync. */
 	const auto ackStart = SDL_GetTicksNS();
 	gfxRedirCompletePresent();
-	SdlWindow::addStat(SdlWindow::STAT_ACK, SDL_GetTicksNS() - ackStart);
+	const auto ackNs = SDL_GetTicksNS() - ackStart;
+	for (auto& window : _windows)
+		window.second.addAckStat(ackNs);
 
 	for (auto& window : _windows)
 		window.second.updateSurface();

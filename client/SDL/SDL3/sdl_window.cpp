@@ -803,43 +803,6 @@ static bool s_presenter = false;
 static bool s_zeroCopy = true;
 static FILE* s_statsLog = nullptr; /* never closed, lives as long as the process */
 
-/* Stage timings. s_frame collects the frame being drawn and is folded into
- * s_stages when it is presented. SDL thread only, apart from s_framesIn. */
-struct StageStat
-{
-	Uint64 sum = 0;
-	Uint64 max = 0;
-	Uint64 count = 0;
-};
-static std::array<StageStat, SdlWindow::STAT_COUNT> s_stages;
-static std::array<Uint64, SdlWindow::STAT_COUNT> s_frame;
-static std::array<bool, SdlWindow::STAT_COUNT> s_frameHas;
-static Uint64 s_frameQueuedAt = 0;
-static Uint64 s_frameDropped = 0; /* replaced by the frame being drawn, never shown */
-static std::atomic<Uint64> s_framesIn{ 0 };
-/* Time between frames arriving, per sampling window; any thread. */
-static std::mutex s_arrivalLock;
-static std::vector<float> s_arrivalMs;
-
-/* Per sampling window: each frame's latency (queued -> presented), and of
- * the frames whose deadline is known, how many missed it. */
-static std::vector<float> s_latencyMs;
-static Uint64 s_lateFrames = 0;
-static Uint64 s_deadlineFrames = 0;
-static Uint64 s_droppedFrames = 0;
-
-/* The last frames for the graphs, oldest at s_historyNext once full. */
-struct FrameSample
-{
-	std::array<float, SdlWindow::STAT_COUNT> ms{}; /* stage times */
-	float intervalMs = 0.0f; /* since the window's previous present, 0 for the first */
-	bool late = false;
-	bool dropped = false; /* it replaced frames that were never shown */
-};
-static std::array<FrameSample, 512> s_history;
-static size_t s_historyNext = 0;
-static size_t s_historyCount = 0;
-
 /* Graph and legend colours per stage, 0xRRGGBB, and for late frames. */
 static constexpr std::array<Uint32, SdlWindow::STAT_COUNT> s_stageColors = {
 	0x64b5f6, 0xffb74d, 0x81c784, 0xf06292, 0xa1887f, 0xba68c8, 0xfff176, 0xbdbdbd, 0xe6e1e5
@@ -956,10 +919,10 @@ void SdlWindow::presenterPresent(const std::vector<SDL_Rect>& damage)
 		const auto now = SDL_GetTicksNS();
 		addStat(STAT_PRESENT, now - presentStart);
 		int late = -1;
-		if (s_frameQueuedAt != 0)
+		if (_frameStats.frameQueuedAt != 0)
 		{
-			addStat(STAT_TOTAL, now - s_frameQueuedAt);
-			late = missedVBlank(s_frameQueuedAt, now);
+			addStat(STAT_TOTAL, now - _frameStats.frameQueuedAt);
+			late = missedVBlank(_frameStats.frameQueuedAt, now);
 		}
 		commitFrameStats(frameInterval(now), late);
 		_statsFrames++;
@@ -1095,8 +1058,14 @@ void SdlWindow::addStat(StatStage stage, Uint64 ns)
 {
 	if (!s_showStats)
 		return;
-	s_frame[stage] += ns;
-	s_frameHas[stage] = true;
+	_frameStats.frame[stage] += ns;
+	_frameStats.frameHas[stage] = true;
+}
+
+void SdlWindow::addAckStat(Uint64 ns)
+{
+	if (_frameUnshown)
+		addStat(STAT_ACK, ns);
 }
 
 void SdlWindow::setFrameQueuedAt(Uint64 ns, Uint64 skipped)
@@ -1109,57 +1078,59 @@ void SdlWindow::setFrameQueuedAt(Uint64 ns, Uint64 skipped)
 	if (_frameUnshown)
 		skipped++;
 	_frameUnshown = true;
-	s_frameQueuedAt = ns;
-	s_frameDropped += skipped;
+	_frameStats.frameQueuedAt = ns;
+	_frameStats.frameDropped += skipped;
 }
 
-void SdlWindow::countFrameIn(Uint64 intervalNs)
+void SdlWindow::countFramesIn(const std::vector<Uint64>& intervalsNs)
 {
 	if (!s_showStats)
 		return;
-	s_framesIn++;
-	/* shortcut: a gap over 100 ms counts as idle, not jitter; below 10 fps
-	 * nothing is measured. */
-	if ((intervalNs == 0) || (intervalNs > 100000000ull))
-		return;
-	std::unique_lock lock(s_arrivalLock);
-	s_arrivalMs.push_back(static_cast<float>(intervalNs) / 1e6f);
+	_frameStats.framesIn += intervalsNs.size();
+	for (const auto ns : intervalsNs)
+	{
+		/* shortcut: a gap over 100 ms counts as idle, not jitter; below 10 fps
+		 * nothing is measured. */
+		if ((ns != 0) && (ns <= 100000000ull))
+			_frameStats.arrivalMs.push_back(static_cast<float>(ns) / 1e6f);
+	}
 }
 
 void SdlWindow::commitFrameStats(Uint64 intervalNs, int late)
 {
-	for (size_t x = 0; x < s_stages.size(); x++)
+	auto& fs = _frameStats;
+	for (size_t x = 0; x < fs.stages.size(); x++)
 	{
-		if (!s_frameHas[x])
+		if (!fs.frameHas[x])
 			continue;
-		auto& stage = s_stages[x];
-		stage.sum += s_frame[x];
-		stage.max = std::max(stage.max, s_frame[x]);
+		auto& stage = fs.stages[x];
+		stage.sum += fs.frame[x];
+		stage.max = std::max(stage.max, fs.frame[x]);
 		stage.count++;
 	}
-	if (s_frameHas[STAT_TOTAL])
-		s_latencyMs.push_back(static_cast<float>(s_frame[STAT_TOTAL]) / 1e6f);
+	if (fs.frameHas[STAT_TOTAL])
+		fs.latencyMs.push_back(static_cast<float>(fs.frame[STAT_TOTAL]) / 1e6f);
 	if (late >= 0)
 	{
-		s_deadlineFrames++;
+		fs.deadlineFrames++;
 		if (late > 0)
-			s_lateFrames++;
+			fs.lateFrames++;
 	}
 
-	auto& sample = s_history[s_historyNext];
+	auto& sample = fs.history[fs.historyNext];
 	for (size_t x = 0; x < sample.ms.size(); x++)
-		sample.ms[x] = static_cast<float>(s_frame[x]) / 1e6f;
+		sample.ms[x] = static_cast<float>(fs.frame[x]) / 1e6f;
 	sample.intervalMs = static_cast<float>(intervalNs) / 1e6f;
 	sample.late = late > 0;
-	sample.dropped = s_frameDropped > 0;
-	s_droppedFrames += s_frameDropped;
-	s_frameDropped = 0;
+	sample.dropped = fs.frameDropped > 0;
+	fs.droppedFrames += fs.frameDropped;
+	fs.frameDropped = 0;
 	_frameUnshown = false;
-	s_historyNext = (s_historyNext + 1) % s_history.size();
-	s_historyCount = std::min(s_historyCount + 1, s_history.size());
-	s_frame.fill(0);
-	s_frameHas.fill(false);
-	s_frameQueuedAt = 0;
+	fs.historyNext = (fs.historyNext + 1) % fs.history.size();
+	fs.historyCount = std::min(fs.historyCount + 1, fs.history.size());
+	fs.frame.fill(0);
+	fs.frameHas.fill(false);
+	fs.frameQueuedAt = 0;
 }
 
 void SdlWindow::setShowDamage(bool enable)
@@ -1438,8 +1409,8 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
  * (ms, colour, alpha) through add, and a mark at the top through mark. A line
  * at each refresh period. */
 template <typename Value>
-static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float rangeMs,
-                      float periodMs, Value value)
+static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, const SdlWindow::FrameStats& fs,
+                      int barW, float rangeMs, float periodMs, Value value)
 {
 	const auto put = [surface](int x, int y, Uint32 rgb, float a)
 	{
@@ -1457,11 +1428,11 @@ static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float r
 	};
 
 	const auto fit = static_cast<size_t>(g.w / barW);
-	const auto count = std::min(s_historyCount, fit);
+	const auto count = std::min(fs.historyCount, fit);
 	for (size_t i = 0; i < count; i++)
 	{
 		const auto& frame =
-		    s_history[(s_historyNext + s_history.size() - count + i) % s_history.size()];
+		    fs.history[(fs.historyNext + fs.history.size() - count + i) % fs.history.size()];
 		const int x0 = g.x + g.w - static_cast<int>(count - i) * barW;
 		/* A gap between bars once they are wide enough. */
 		const int x1 = x0 + ((barW > 2) ? barW - 1 : barW);
@@ -1495,12 +1466,12 @@ static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float r
  * time since the frame before. Scaled to the
  * monitor's refresh period, so a steady frame rate looks the same at any
  * rate. A gap longer than the graph is idle and only a faint stub. */
-static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW, int gap,
-                            float periodMs)
+static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area,
+                            const SdlWindow::FrameStats& fs, int barW, int gap, float periodMs)
 {
 	const int stagesH = (area.h - gap) * 2 / 3;
-	drawGraph(surface, { area.x, area.y, area.w, stagesH }, barW, 2.0f * periodMs, periodMs,
-	          [](const FrameSample& frame, const auto& add, const auto& mark)
+	drawGraph(surface, { area.x, area.y, area.w, stagesH }, fs, barW, 2.0f * periodMs, periodMs,
+	          [](const SdlWindow::FrameStats::Sample& frame, const auto& add, const auto& mark)
 	          {
 		          for (size_t st = 0; st < SdlWindow::STAT_TOTAL; st++)
 			          add(frame.ms[st], frame.late ? s_lateColor : s_stageColors[st], 1.0f);
@@ -1508,9 +1479,9 @@ static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW
 			          mark(s_droppedColor);
 	          });
 	const auto rangeMs = 3.0f * periodMs;
-	drawGraph(surface, { area.x, area.y + stagesH + gap, area.w, area.h - stagesH - gap }, barW,
+	drawGraph(surface, { area.x, area.y + stagesH + gap, area.w, area.h - stagesH - gap }, fs, barW,
 	          rangeMs, periodMs,
-	          [rangeMs](const FrameSample& frame, const auto& add, const auto&)
+	          [rangeMs](const SdlWindow::FrameStats::Sample& frame, const auto& add, const auto&)
 	          {
 		          const auto rgb = frame.late ? s_lateColor : 0x938f99;
 		          if (frame.intervalMs > rangeMs)
@@ -1621,7 +1592,8 @@ void SdlWindow::updatePresenterOverlay()
 		(void)SDL_GetWindowSizeInPixels(_window, &winW, nullptr);
 		const auto left = rects.front().x;
 		const auto wantRight =
-		    std::min(tableRight + 2 * gap + static_cast<int>(s_history.size()) * barW, winW - left);
+		    std::min(tableRight + 2 * gap + static_cast<int>(_frameStats.history.size()) * barW,
+		             winW - left);
 		if (wantRight > textRight)
 		{
 			surface = render(wantRight - left);
@@ -1633,7 +1605,7 @@ void SdlWindow::updatePresenterOverlay()
 		const SDL_Rect graphs = { tableRight + 2 * gap, top.y, textRight - tableRight - 2 * gap,
 			                      top.h * static_cast<int>(STAT_COUNT + 1) };
 		if (graphs.w > 0)
-			drawStatsGraphs(surface.get(), graphs, barW, gap, periodMs);
+			drawStatsGraphs(surface.get(), graphs, _frameStats, barW, gap, periodMs);
 	}
 	(void)_presenter->setOverlay(surface.get());
 #endif
@@ -1652,23 +1624,8 @@ void SdlWindow::syncStatsToggle()
 	_statsBlits = 0;
 	_statsBytes = 0;
 	_statsUploads.fill({});
-	s_stages.fill({});
-	s_frame.fill(0);
-	s_frameHas.fill(false);
-	s_frameQueuedAt = 0;
-	s_framesIn = 0;
-	{
-		std::unique_lock lock(s_arrivalLock);
-		s_arrivalMs.clear();
-	}
-	s_latencyMs.clear();
-	s_lateFrames = 0;
-	s_deadlineFrames = 0;
-	s_frameDropped = 0;
-	s_droppedFrames = 0;
+	_frameStats = {};
 	_frameUnshown = false;
-	s_historyNext = 0;
-	s_historyCount = 0;
 	_lastPresentNs = 0;
 	/* Something to show until the first numbers, half a second of frames
 	 * later; an idle desktop sends none. */
@@ -1702,7 +1659,8 @@ bool SdlWindow::updateStats()
 		const auto bpf = static_cast<double>(_statsBlits) /
 		                 static_cast<double>(std::max<Uint64>(_statsFrames, 1));
 
-		const auto in = static_cast<double>(s_framesIn.exchange(0)) / secs;
+		auto& fs = _frameStats;
+		const auto in = static_cast<double>(std::exchange(fs.framesIn, 0)) / secs;
 		int vsync = 0;
 		if (_renderer)
 			(void)SDL_GetRenderVSync(_renderer, &vsync);
@@ -1729,7 +1687,7 @@ bool SdlWindow::updateStats()
 			return static_cast<double>(*it);
 		};
 		std::string latency = "latency ms";
-		auto& v = s_latencyMs;
+		auto& v = fs.latencyMs;
 		if (!v.empty())
 		{
 			const auto pct = [&](size_t p) { return percentile(v, p); };
@@ -1742,14 +1700,14 @@ bool SdlWindow::updateStats()
 		}
 		else
 			latency += "  -";
-		if (s_deadlineFrames > 0)
+		if (fs.deadlineFrames > 0)
 		{
 			const auto begin = latency.size() + 4;
 			(void)SDL_snprintf(buffer, sizeof(buffer), "    late %llu of %llu (%.1f%%)",
-			                   static_cast<unsigned long long>(s_lateFrames),
-			                   static_cast<unsigned long long>(s_deadlineFrames),
-			                   100.0 * static_cast<double>(s_lateFrames) /
-			                       static_cast<double>(s_deadlineFrames));
+			                   static_cast<unsigned long long>(fs.lateFrames),
+			                   static_cast<unsigned long long>(fs.deadlineFrames),
+			                   100.0 * static_cast<double>(fs.lateFrames) /
+			                       static_cast<double>(fs.deadlineFrames));
 			latency += buffer;
 			_statsColors.push_back({ _statsText.size(), begin, begin + 4, s_lateColor });
 		}
@@ -1758,7 +1716,7 @@ bool SdlWindow::updateStats()
 		{
 			const auto begin = latency.size() + 4;
 			(void)SDL_snprintf(buffer, sizeof(buffer), "    dropped %llu",
-			                   static_cast<unsigned long long>(s_droppedFrames));
+			                   static_cast<unsigned long long>(fs.droppedFrames));
 			latency += buffer;
 			_statsColors.push_back({ _statsText.size(), begin, begin + 7, s_droppedColor });
 		}
@@ -1767,11 +1725,7 @@ bool SdlWindow::updateStats()
 
 		/* How evenly frames arrive: the median time between them, and how far
 		 * apart the 10th and 90th percentile are. */
-		std::vector<float> arrivals;
-		{
-			std::unique_lock lock(s_arrivalLock);
-			arrivals.swap(s_arrivalMs);
-		}
+		auto& arrivals = fs.arrivalMs;
 		std::string arrival = "arrival interval ms";
 		if (!arrivals.empty())
 		{
@@ -1785,9 +1739,10 @@ bool SdlWindow::updateStats()
 		else
 			arrival += "  -";
 		_statsText.push_back(arrival);
-		s_lateFrames = 0;
-		s_deadlineFrames = 0;
-		s_droppedFrames = 0;
+		arrivals.clear();
+		fs.lateFrames = 0;
+		fs.deadlineFrames = 0;
+		fs.droppedFrames = 0;
 
 		/* Per upload path, to compare them on the same content: run once with
 		 * and once with -sdl-zero-copy. */
@@ -1814,9 +1769,9 @@ bool SdlWindow::updateStats()
 		};
 		(void)SDL_snprintf(buffer, sizeof(buffer), "%-9s %7s %7s", "ms", "avg", "max");
 		_statsText.emplace_back(buffer);
-		for (size_t x = 0; x < s_stages.size(); x++)
+		for (size_t x = 0; x < fs.stages.size(); x++)
 		{
-			const auto& stage = s_stages[x];
+			const auto& stage = fs.stages[x];
 			_statsColors.push_back(
 			    { _statsText.size(), 0, SDL_strlen(names[x]), s_stageColors[x] });
 			const auto avg = (stage.count > 0) ? static_cast<double>(stage.sum) /
@@ -1826,13 +1781,14 @@ bool SdlWindow::updateStats()
 			                   static_cast<double>(stage.max) / 1e6);
 			_statsText.emplace_back(buffer);
 		}
-		s_stages.fill({});
+		fs.stages.fill({});
 
 		/* The overlay can't be copied out of, so the same numbers go to stderr
 		 * or the stats log. */
 		auto out = s_statsLog ? s_statsLog : stderr;
 		for (const auto& text : _statsText)
-			(void)fprintf(out, "[stats] %s\n", text.c_str());
+			(void)fprintf(out, "[stats %u] %s\n", static_cast<unsigned>(monitorIndex()),
+			              text.c_str());
 		(void)fflush(out);
 
 		_statsWindowStart = now;
@@ -1972,8 +1928,8 @@ void SdlWindow::updateSurface()
 	{
 		const auto now = SDL_GetTicksNS();
 		addStat(STAT_PRESENT, now - presentStart);
-		if (s_frameQueuedAt != 0)
-			addStat(STAT_TOTAL, now - s_frameQueuedAt);
+		if (_frameStats.frameQueuedAt != 0)
+			addStat(STAT_TOTAL, now - _frameStats.frameQueuedAt);
 		commitFrameStats(frameInterval(now), -1);
 	}
 }
