@@ -836,9 +836,9 @@ static size_t s_historyCount = 0;
 
 /* Graph and legend colours per stage, 0xRRGGBB, and for late frames. */
 static constexpr std::array<Uint32, SdlWindow::STAT_COUNT> s_stageColors = {
-	0x5da5da, 0xfaa43a, 0x60bd68, 0xf17cb0, 0xb2912f, 0xb276b2, 0xdecf3f, 0x9e9e9e, 0xffffff
+	0x64b5f6, 0xffb74d, 0x81c784, 0xf06292, 0xa1887f, 0xba68c8, 0xfff176, 0xbdbdbd, 0xe6e1e5
 };
-static constexpr Uint32 s_lateColor = 0xff3030;
+static constexpr Uint32 s_lateColor = 0xef5350;
 
 void SdlWindow::setVSync(bool enable)
 {
@@ -1192,23 +1192,54 @@ SDL_FRect SdlWindow::statsBox() const
 }
 
 #if defined(_WIN32)
-/* Lines of white text on a rounded, translucent black box, as premultiplied
- * BGRA32, with marginX/marginY of transparent space left of and above the
- * box. Sizes are in points, times scale. GDI draws the text because SDL only
- * has its 8px debug font. colors tints parts of lines (ASCII only). With
- * extraH > 0 the box gets that much empty room below the text, returned in
- * extra, for the caller to draw into. */
+/* A Material surface: colours 0xRRGGBB, sizes in multiples of the font
+ * size. */
+struct BoxStyle
+{
+	Uint32 surface;
+	float alpha;
+	Uint32 text;
+	float radius;
+	float padX;
+	float padY;
+};
+/* A Material 3 snackbar (inverse surface, 4dp corners at 14sp). */
+static constexpr BoxStyle s_snackbarStyle = { 0x313033, 1.0f, 0xf4eff4, 0.3f, 1.15f, 1.0f };
+/* A dark Material 3 card (surface container high, 12dp corners). */
+static constexpr BoxStyle s_cardStyle = { 0x2b2930, 0.94f, 0xe6e1e5, 0.9f, 1.2f, 1.0f };
+
+/* Rounded rect's signed distance: negative inside, in pixels. */
+static float roundedRectDistance(float px, float py, float x, float y, float w, float h, float r)
+{
+	const auto qx = std::abs(px - x - w / 2.0f) - (w / 2.0f - r);
+	const auto qy = std::abs(py - y - h / 2.0f) - (h / 2.0f - r);
+	const auto ox = std::max(qx, 0.0f);
+	const auto oy = std::max(qy, 0.0f);
+	return std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.0f) - r;
+}
+
+/* Lines of text on a rounded Material surface with a drop shadow, as
+ * premultiplied BGRA32. The box starts marginX/marginY from the top left,
+ * or further if the shadow needs the room. Sizes are in points, times scale.
+ * GDI draws the text because SDL only has its 8px debug font. colors tints
+ * parts of lines (ASCII only). With extraH > 0 the box gets that much empty
+ * room below the text, returned in extra, for the caller to draw into. */
 static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const wchar_t* face,
                                   float fontSize, float scale, float marginX, float marginY,
+                                  const BoxStyle& style,
                                   const std::vector<SdlTextColor>& colors = {}, int extraH = 0,
                                   SDL_Rect* extra = nullptr)
 {
 	const auto em = fontSize * scale;
-	const auto padX = static_cast<int>(std::lround(em * 1.3f));
-	const auto padY = static_cast<int>(std::lround(em * 0.65f));
-	const auto radius = std::round(em * 0.8f);
-	const auto left = static_cast<int>(std::lround(marginX * scale));
-	const auto top = static_cast<int>(std::lround(marginY * scale));
+	const auto padX = static_cast<int>(std::lround(em * style.padX));
+	const auto padY = static_cast<int>(std::lround(em * style.padY));
+	const auto radius = std::round(em * style.radius);
+	/* Elevation level 3: a shadow blurred over 8dp, 3dp down. */
+	const auto blur = 8.0f * scale;
+	const auto drop = 3.0f * scale;
+	const auto shadowRoom = static_cast<int>(std::ceil(blur + drop));
+	const auto left = std::max(static_cast<int>(std::lround(marginX * scale)), shadowRoom);
+	const auto top = std::max(static_cast<int>(std::lround(marginY * scale)), shadowRoom);
 
 	std::vector<std::wstring> wide;
 	for (const auto& line : lines)
@@ -1241,8 +1272,8 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 	const int textH = lineH * static_cast<int>(wide.size());
 	const int boxW = textW + 2 * padX;
 	const int boxH = textH + 2 * padY + ((extraH > 0) ? extraH + padY : 0);
-	const int w = left + boxW;
-	const int h = top + boxH;
+	const int w = left + boxW + shadowRoom;
+	const int h = top + boxH + shadowRoom;
 	if (extra)
 		*extra = { left + padX, top + 2 * padY + textH, textW, std::max(extraH, 0) };
 
@@ -1293,28 +1324,39 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 			auto dst = static_cast<Uint8*>(surface->pixels) + 1ll * surface->pitch * y;
 			for (int x = 0; x < w; x++)
 			{
-				/* The box's coverage: distance from the pixel centre to the
-				 * box shrunk by the radius, antialiased over one pixel. */
-				const auto cx = static_cast<float>(x - left) + 0.5f;
-				const auto cy = static_cast<float>(y - top) + 0.5f;
-				const auto dx =
-				    std::max({ radius - cx, 0.0f, cx - static_cast<float>(boxW) + radius });
-				const auto dy =
-				    std::max({ radius - cy, 0.0f, cy - static_cast<float>(boxH) + radius });
+				/* Text over the box over its shadow, premultiplied. The box
+				 * is antialiased over one pixel, the shadow fades out over
+				 * the blur. */
+				const auto px = static_cast<float>(x) + 0.5f;
+				const auto py = static_cast<float>(y) + 0.5f;
+				const auto fl = static_cast<float>(left);
+				const auto ft = static_cast<float>(top);
+				const auto fw = static_cast<float>(boxW);
+				const auto fh = static_cast<float>(boxH);
 				const auto box =
-				    ((x < left) || (y < top))
-				        ? 0.0f
-				        : std::clamp(radius - std::sqrt(dx * dx + dy * dy) + 0.5f, 0.0f, 1.0f);
+				    std::clamp(0.5f - roundedRectDistance(px, py, fl, ft, fw, fh, radius), 0.0f,
+				               1.0f) *
+				    style.alpha;
+				const auto s = std::clamp(
+				    0.5f - roundedRectDistance(px, py - drop, fl, ft, fw, fh, radius) / blur, 0.0f,
+				    1.0f);
+				const auto shadow = 0.38f * s * s * (3.0f - 2.0f * s);
 				const auto ink = static_cast<float>(src[4 * x + 1]) / 255.0f;
-				const auto alpha = ink + 0.72f * box * (1.0f - ink);
-				Uint32 rgb = 0xffffff;
+
+				Uint32 rgb = style.text;
 				for (const auto& t : tints)
 					if ((x >= t.x0) && (x < t.x1) && (y >= t.y0) && (y < t.y1))
 						rgb = t.rgb;
+				const auto under = box + shadow * (1.0f - box);
 				for (int c = 0; c < 3; c++)
-					dst[4 * x + c] = static_cast<Uint8>(
-					    std::lround(ink * static_cast<float>((rgb >> (8 * c)) & 0xff)));
-				dst[4 * x + 3] = static_cast<Uint8>(std::lround(alpha * 255.0f));
+				{
+					const auto channel = [](Uint32 v, int c)
+					{ return static_cast<float>((v >> (8 * c)) & 0xff); };
+					dst[4 * x + c] = static_cast<Uint8>(std::lround(
+					    ink * channel(rgb, c) + (1.0f - ink) * box * channel(style.surface, c)));
+				}
+				dst[4 * x + 3] =
+				    static_cast<Uint8>(std::lround((ink + (1.0f - ink) * under) * 255.0f));
 			}
 		}
 		(void)SelectObject(dc, oldBitmap);
@@ -1389,7 +1431,7 @@ static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW
 	          });
 	drawGraph(surface, { area.x, area.y + stagesH + gap, area.w, area.h - stagesH - gap }, barW,
 	          50.0f, [](const FrameSample& frame, const auto& add)
-	          { add(frame.intervalMs, frame.late ? s_lateColor : 0xc0c0c0); });
+	          { add(frame.intervalMs, frame.late ? s_lateColor : 0x938f99); });
 }
 #endif
 
@@ -1406,7 +1448,7 @@ bool SdlWindow::setNotification([[maybe_unused]] const std::string& text,
 	SDL_Surface* surface = nullptr;
 	if (!text.empty())
 		surface = renderTextBox({ text }, L"Segoe UI", fontSize,
-		                        SDL_GetWindowDisplayScale(_window), 0.0f, 16.0f);
+		                        SDL_GetWindowDisplayScale(_window), 0.0f, 16.0f, s_snackbarStyle);
 
 	std::unique_lock lock(_notificationLock);
 	_notification.reset(surface);
@@ -1443,7 +1485,8 @@ void SdlWindow::updatePresenterOverlay()
 		graphsH = static_cast<int>(std::lround(em * 12.0f));
 	}
 	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> surface(
-	    renderTextBox(lines, L"Consolas", fontSize, scale, 8.0f, 8.0f, colors, graphsH, &graphs),
+	    renderTextBox(lines, L"Consolas", fontSize, scale, 8.0f, 8.0f, s_cardStyle, colors, graphsH,
+	                  &graphs),
 	    SDL_DestroySurface);
 	if (!surface)
 		return;
