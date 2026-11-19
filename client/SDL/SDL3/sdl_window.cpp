@@ -1238,13 +1238,13 @@ static float roundedRectDistance(float px, float py, float x, float y, float w, 
  * premultiplied BGRA32. The box starts marginX/marginY from the top left,
  * or further if the shadow needs the room. Sizes are in points, times scale.
  * GDI draws the text because SDL only has its 8px debug font. colors tints
- * parts of lines (ASCII only). With extraH > 0 the box gets that much empty
- * room below the text, returned in extra, for the caller to draw into. */
+ * parts of lines (ASCII only). lineRects gets where each line's text went,
+ * for the caller to draw next to it; the box is as wide as the longest. */
 static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const wchar_t* face,
                                   float fontSize, float scale, float marginX, float marginY,
                                   const BoxStyle& style,
-                                  const std::vector<SdlTextColor>& colors = {}, int extraH = 0,
-                                  SDL_Rect* extra = nullptr)
+                                  const std::vector<SdlTextColor>& colors = {},
+                                  std::vector<SDL_Rect>* lineRects = nullptr)
 {
 	const auto em = fontSize * scale;
 	const auto padX = static_cast<int>(std::lround(em * style.padX));
@@ -1278,20 +1278,27 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 	auto oldFont = SelectObject(dc, font);
 	int textW = 0;
 	int lineH = 0;
+	std::vector<int> lineW;
 	for (const auto& line : wide)
 	{
 		SIZE size = {};
 		(void)GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &size);
+		lineW.push_back(static_cast<int>(size.cx));
 		textW = std::max(textW, static_cast<int>(size.cx));
 		lineH = std::max(lineH, static_cast<int>(size.cy));
 	}
 	const int textH = lineH * static_cast<int>(wide.size());
 	const int boxW = textW + 2 * padX;
-	const int boxH = textH + 2 * padY + ((extraH > 0) ? extraH + padY : 0);
+	const int boxH = textH + 2 * padY;
 	const int w = left + boxW + shadowRoom;
 	const int h = top + boxH + shadowRoom;
-	if (extra)
-		*extra = { left + padX, top + 2 * padY + textH, textW, std::max(extraH, 0) };
+	if (lineRects)
+	{
+		lineRects->clear();
+		for (size_t x = 0; x < lineW.size(); x++)
+			lineRects->push_back(
+			    { left + padX, top + padY + lineH * static_cast<int>(x), lineW[x], lineH });
+	}
 
 	struct Tint
 	{
@@ -1514,12 +1521,11 @@ void SdlWindow::updatePresenterOverlay()
 	const auto em = fontSize * scale;
 	auto lines = _statsText;
 	auto colors = _statsColors;
-	SDL_Rect graphs = {};
-	int graphsH = 0;
 	/* 60 Hz until the vblank thread has measured the monitor. */
 	const auto periodUs = vblank() ? _vblank->periodUs() : -1;
 	const auto periodMs = (periodUs > 0) ? static_cast<float>(periodUs) / 1000.0f : 1000.0f / 60.0f;
-	if (_statsText.size() > 1)
+	const bool withGraphs = _statsText.size() > STAT_COUNT;
+	if (withGraphs)
 	{
 		char legend[200] = { 0 };
 		(void)SDL_snprintf(legend, sizeof(legend),
@@ -1535,18 +1541,34 @@ void SdlWindow::updatePresenterOverlay()
 		const auto marked = lines.back().find("marked");
 		colors.push_back({ lines.size() - 1, red, red + 3, s_lateColor });
 		colors.push_back({ lines.size() - 1, marked, marked + 6, s_droppedColor });
-		graphsH = static_cast<int>(std::lround(em * 12.0f));
 	}
+	std::vector<SDL_Rect> rects;
 	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> surface(
-	    renderTextBox(lines, L"Consolas", fontSize, scale, 8.0f, 8.0f, s_cardStyle, colors, graphsH,
-	                  &graphs),
+	    renderTextBox(lines, L"Consolas", fontSize, scale, 8.0f, 8.0f, s_cardStyle, colors, &rects),
 	    SDL_DestroySurface);
 	if (!surface)
 		return;
-	if (graphsH > 0)
-		drawStatsGraphs(surface.get(), graphs,
-		                std::max(1, static_cast<int>(std::lround(em / 4.0f))),
-		                static_cast<int>(std::lround(em / 2.0f)), periodMs);
+	if (withGraphs && (rects.size() == lines.size()))
+	{
+		/* Right of the stage table, the last lines of _statsText, which is
+		 * also the graphs' legend; as wide as the longest line allows. */
+		const auto first = _statsText.size() - STAT_COUNT - 1;
+		const auto gap = static_cast<int>(std::lround(em / 2.0f));
+		int tableRight = 0;
+		int textRight = 0;
+		for (size_t x = 0; x < rects.size(); x++)
+		{
+			textRight = std::max(textRight, rects[x].x + rects[x].w);
+			if ((x >= first) && (x < _statsText.size()))
+				tableRight = std::max(tableRight, rects[x].x + rects[x].w);
+		}
+		const auto& top = rects[first];
+		const SDL_Rect graphs = { tableRight + 2 * gap, top.y, textRight - tableRight - 2 * gap,
+			                      top.h * static_cast<int>(STAT_COUNT + 1) };
+		if (graphs.w > 0)
+			drawStatsGraphs(surface.get(), graphs,
+			                std::max(1, static_cast<int>(std::lround(em / 4.0f))), gap, periodMs);
+	}
 	(void)_presenter->setOverlay(surface.get());
 #endif
 }
@@ -1701,32 +1723,6 @@ bool SdlWindow::updateStats()
 		s_deadlineFrames = 0;
 		s_droppedFrames = 0;
 
-		/* avg/max in ms per stage, two lines so it fits a 1280 wide window. */
-		static const std::array<const char*, STAT_COUNT> names = {
-			"wait", "lock", "upload", "render", "ack", "swapwait", "composite", "present", "total"
-		};
-		std::string line = "ms avg/max";
-		for (size_t x = 0; x < s_stages.size(); x++)
-		{
-			const auto& stage = s_stages[x];
-			const auto begin = line.size() + 2;
-			_statsColors.push_back(
-			    { _statsText.size(), begin, begin + SDL_strlen(names[x]), s_stageColors[x] });
-			const auto avg = (stage.count > 0) ? static_cast<double>(stage.sum) /
-			                                         static_cast<double>(stage.count) / 1e6
-			                                   : 0.0;
-			(void)SDL_snprintf(buffer, sizeof(buffer), "  %s %.2f/%.2f", names[x], avg,
-			                   static_cast<double>(stage.max) / 1e6);
-			line += buffer;
-			if (x == STAT_RENDER)
-			{
-				_statsText.push_back(line);
-				line = "          ";
-			}
-		}
-		_statsText.push_back(line);
-		s_stages.fill({});
-
 		/* Per upload path, to compare them on the same content: run once with
 		 * and once with -sdl-zero-copy. */
 		static const std::array<const char*, 2> paths = { "cpu copy ", "zero copy" };
@@ -1744,6 +1740,27 @@ bool SdlWindow::updateStats()
 			_statsText.emplace_back(buffer);
 		}
 		_statsUploads.fill({});
+
+		/* avg/max in ms per stage, one per line and last: the presenter
+		 * draws the graphs next to it. */
+		static const std::array<const char*, STAT_COUNT> names = {
+			"wait", "lock", "upload", "render", "ack", "swapwait", "composite", "present", "total"
+		};
+		(void)SDL_snprintf(buffer, sizeof(buffer), "%-9s %7s %7s", "ms", "avg", "max");
+		_statsText.emplace_back(buffer);
+		for (size_t x = 0; x < s_stages.size(); x++)
+		{
+			const auto& stage = s_stages[x];
+			_statsColors.push_back(
+			    { _statsText.size(), 0, SDL_strlen(names[x]), s_stageColors[x] });
+			const auto avg = (stage.count > 0) ? static_cast<double>(stage.sum) /
+			                                         static_cast<double>(stage.count) / 1e6
+			                                   : 0.0;
+			(void)SDL_snprintf(buffer, sizeof(buffer), "%-9s %7.2f %7.2f", names[x], avg,
+			                   static_cast<double>(stage.max) / 1e6);
+			_statsText.emplace_back(buffer);
+		}
+		s_stages.fill({});
 
 		/* The overlay can't be copied out of, so the same numbers go to stderr
 		 * or the stats log. */
