@@ -199,8 +199,9 @@ class SdlWindow
 
 	/* SDL thread only. No-ops unless showStats() is on. */
 	static void addStat(StatStage stage, Uint64 ns);
-	/* SDL_GetTicksNS() at which the frame about to be drawn was queued. */
-	static void setFrameQueuedAt(Uint64 ns);
+	/* SDL_GetTicksNS() at which the frame about to be drawn was queued, and
+	 * how many frames that arrived since the last one drawn it replaces. */
+	void setFrameQueuedAt(Uint64 ns, Uint64 skipped);
 	/* Any thread: a frame arrived from the server. */
 	static void countFrameIn();
 
@@ -236,7 +237,9 @@ class SdlWindow
 	/* Folds the frame's stage times into the stats. intervalNs is the time
 	 * since the window's previous present; late is 1 if the frame missed its
 	 * vblank, 0 if not, -1 if unknown. */
-	static void commitFrameStats(Uint64 intervalNs, int late);
+	void commitFrameStats(Uint64 intervalNs, int late);
+	/* A frame was drawn and not presented yet. */
+	bool _frameUnshown = false;
 	/* See commitFrameStats(). */
 	[[nodiscard]] int missedVBlank(Uint64 queuedNs, Uint64 nowNs);
 	[[nodiscard]] Uint64 frameInterval(Uint64 nowNs);

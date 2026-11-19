@@ -807,6 +807,7 @@ static std::array<StageStat, SdlWindow::STAT_COUNT> s_stages;
 static std::array<Uint64, SdlWindow::STAT_COUNT> s_frame;
 static std::array<bool, SdlWindow::STAT_COUNT> s_frameHas;
 static Uint64 s_frameQueuedAt = 0;
+static Uint64 s_frameDropped = 0; /* replaced by the frame being drawn, never shown */
 static std::atomic<Uint64> s_framesIn{ 0 };
 
 /* Per sampling window: each frame's latency (queued -> presented), and of
@@ -814,6 +815,7 @@ static std::atomic<Uint64> s_framesIn{ 0 };
 static std::vector<float> s_latencyMs;
 static Uint64 s_lateFrames = 0;
 static Uint64 s_deadlineFrames = 0;
+static Uint64 s_droppedFrames = 0;
 
 /* The last frames for the graphs, oldest at s_historyNext once full. */
 struct FrameSample
@@ -821,6 +823,7 @@ struct FrameSample
 	std::array<float, SdlWindow::STAT_COUNT> ms{}; /* stage times */
 	float intervalMs = 0.0f; /* since the window's previous present, 0 for the first */
 	bool late = false;
+	bool dropped = false; /* it replaced frames that were never shown */
 };
 static std::array<FrameSample, 512> s_history;
 static size_t s_historyNext = 0;
@@ -831,6 +834,7 @@ static constexpr std::array<Uint32, SdlWindow::STAT_COUNT> s_stageColors = {
 	0x64b5f6, 0xffb74d, 0x81c784, 0xf06292, 0xa1887f, 0xba68c8, 0xfff176, 0xbdbdbd, 0xe6e1e5
 };
 static constexpr Uint32 s_lateColor = 0xef5350;
+static constexpr Uint32 s_droppedColor = 0x4dd0e1;
 
 void SdlWindow::setVSync(bool enable)
 {
@@ -1084,12 +1088,18 @@ void SdlWindow::addStat(StatStage stage, Uint64 ns)
 	s_frameHas[stage] = true;
 }
 
-void SdlWindow::setFrameQueuedAt(Uint64 ns)
+void SdlWindow::setFrameQueuedAt(Uint64 ns, Uint64 skipped)
 {
 	/* Only commitFrameStats() clears it, so a value from before the stats were
 	 * turned on would count as the first frame's latency. */
-	if (s_showStats)
-		s_frameQueuedAt = ns;
+	if (!s_showStats)
+		return;
+	/* The frame drawn before is still waiting for the swap chain. */
+	if (_frameUnshown)
+		skipped++;
+	_frameUnshown = true;
+	s_frameQueuedAt = ns;
+	s_frameDropped += skipped;
 }
 
 void SdlWindow::countFrameIn()
@@ -1123,6 +1133,10 @@ void SdlWindow::commitFrameStats(Uint64 intervalNs, int late)
 		sample.ms[x] = static_cast<float>(s_frame[x]) / 1e6f;
 	sample.intervalMs = static_cast<float>(intervalNs) / 1e6f;
 	sample.late = late > 0;
+	sample.dropped = s_frameDropped > 0;
+	s_droppedFrames += s_frameDropped;
+	s_frameDropped = 0;
+	_frameUnshown = false;
 	s_historyNext = (s_historyNext + 1) % s_history.size();
 	s_historyCount = std::min(s_historyCount + 1, s_history.size());
 	s_frame.fill(0);
@@ -1365,7 +1379,8 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 
 /* One bar per frame in g, newest on the right, ms from 0 to rangeMs; longer
  * times stop at the top. value gives a bar's segments bottom up as
- * (ms, colour, alpha) through add. A line at each refresh period. */
+ * (ms, colour, alpha) through add, and a mark at the top through mark. A line
+ * at each refresh period. */
 template <typename Value>
 static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float rangeMs,
                       float periodMs, Value value)
@@ -1403,7 +1418,13 @@ static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float r
 				for (int x = x0; x < x1; x++)
 					put(x, g.y + g.h - 1 - r, rgb, a);
 		};
-		value(frame, add);
+		const auto mark = [&](Uint32 rgb)
+		{
+			for (int r = 0; r < std::min(barW, g.h); r++)
+				for (int x = x0; x < x1; x++)
+					put(x, g.y + r, rgb, 1.0f);
+		};
+		value(frame, add, mark);
 	}
 	for (int k = 1; static_cast<float>(k) * periodMs < rangeMs * 0.99f; k++)
 	{
@@ -1414,7 +1435,8 @@ static void drawGraph(SDL_Surface* surface, const SDL_Rect& g, int barW, float r
 }
 
 /* Two graphs, one bar per frame: the stages stacked in their colours, in red
- * for a late frame, and below the time since the frame before. Scaled to the
+ * for a late frame, marked if frames were dropped before it, and below the
+ * time since the frame before. Scaled to the
  * monitor's refresh period, so a steady frame rate looks the same at any
  * rate. A gap longer than the graph is idle and only a faint stub. */
 static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW, int gap,
@@ -1422,15 +1444,17 @@ static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area, int barW
 {
 	const int stagesH = (area.h - gap) * 2 / 3;
 	drawGraph(surface, { area.x, area.y, area.w, stagesH }, barW, 2.0f * periodMs, periodMs,
-	          [](const FrameSample& frame, const auto& add)
+	          [](const FrameSample& frame, const auto& add, const auto& mark)
 	          {
 		          for (size_t st = 0; st < SdlWindow::STAT_TOTAL; st++)
 			          add(frame.ms[st], frame.late ? s_lateColor : s_stageColors[st], 1.0f);
+		          if (frame.dropped)
+			          mark(s_droppedColor);
 	          });
 	const auto rangeMs = 3.0f * periodMs;
 	drawGraph(surface, { area.x, area.y + stagesH + gap, area.w, area.h - stagesH - gap }, barW,
 	          rangeMs, periodMs,
-	          [rangeMs](const FrameSample& frame, const auto& add)
+	          [rangeMs](const FrameSample& frame, const auto& add, const auto&)
 	          {
 		          const auto rgb = frame.late ? s_lateColor : 0x938f99;
 		          if (frame.intervalMs > rangeMs)
@@ -1490,11 +1514,17 @@ void SdlWindow::updatePresenterOverlay()
 		char legend[200] = { 0 };
 		(void)SDL_snprintf(legend, sizeof(legend),
 		                   "graphs per frame: stage times (0-%.0f ms), time since the frame before "
-		                   "(0-%.0f ms, longer is idle); lines at %.0f Hz, late in red",
-		                   2.0 * periodMs, 3.0 * periodMs, 1000.0 / periodMs);
+		                   "(0-%.0f ms, longer is idle)",
+		                   2.0 * periodMs, 3.0 * periodMs);
 		lines.emplace_back(legend);
-		colors.push_back(
-		    { lines.size() - 1, lines.back().size() - 3, lines.back().size(), s_lateColor });
+		(void)SDL_snprintf(legend, sizeof(legend),
+		                   "lines at %.0f Hz, late in red, marked if frames were dropped before it",
+		                   1000.0 / periodMs);
+		lines.emplace_back(legend);
+		const auto red = lines.back().find("red");
+		const auto marked = lines.back().find("marked");
+		colors.push_back({ lines.size() - 1, red, red + 3, s_lateColor });
+		colors.push_back({ lines.size() - 1, marked, marked + 6, s_droppedColor });
 		graphsH = static_cast<int>(std::lround(em * 12.0f));
 	}
 	std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)> surface(
@@ -1532,6 +1562,9 @@ void SdlWindow::syncStatsToggle()
 	s_latencyMs.clear();
 	s_lateFrames = 0;
 	s_deadlineFrames = 0;
+	s_frameDropped = 0;
+	s_droppedFrames = 0;
+	_frameUnshown = false;
 	s_historyNext = 0;
 	s_historyCount = 0;
 	_lastPresentNs = 0;
@@ -1585,7 +1618,8 @@ bool SdlWindow::updateStats()
 		_statsText.emplace_back(buffer);
 
 		/* Latency from the frame's arrival to its present, and how many frames
-		 * missed the first vblank after they arrived. */
+		 * missed the first vblank after they arrived, and how many were
+		 * replaced by a newer one before they were shown. */
 		std::string latency = "latency ms";
 		auto& v = s_latencyMs;
 		if (!v.empty())
@@ -1618,10 +1652,18 @@ bool SdlWindow::updateStats()
 		}
 		else
 			latency += "    late: no vblank to check against";
+		{
+			const auto begin = latency.size() + 4;
+			(void)SDL_snprintf(buffer, sizeof(buffer), "    dropped %llu",
+			                   static_cast<unsigned long long>(s_droppedFrames));
+			latency += buffer;
+			_statsColors.push_back({ _statsText.size(), begin, begin + 7, s_droppedColor });
+		}
 		_statsText.push_back(latency);
 		v.clear();
 		s_lateFrames = 0;
 		s_deadlineFrames = 0;
+		s_droppedFrames = 0;
 
 		/* avg/max in ms per stage, two lines so it fits a 1280 wide window. */
 		static const std::array<const char*, STAT_COUNT> names = {
