@@ -180,4 +180,20 @@ A string as defined at
 \fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
 .RE
 .RE
+.PP
+\fISDL_Damage\fR
+.RS 4
+.PP
+.RS 4
+Turns /sdl-show-damage on and off: outlines the regions updated in each frame\&.
+.br
+
+Default
+\fISDL_SCANCODE_P\fR\&.
+.br
+
+A string as defined at
+\fI@SDL_WIKI_BASE_URL@/SDL_Scancode\fR
+.RE
+.RE
 .RE

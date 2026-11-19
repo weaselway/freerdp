@@ -87,7 +87,7 @@ SdlContext::SdlContext(rdpContext* context)
 	_args.push_back({ sdl_connection_dialog, COMMAND_LINE_VALUE_BOOL, nullptr, "on", nullptr, -1,
 	                  nullptr, "the connection dialog with progress and errors" });
 	_args.push_back({ sdl_show_damage, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr,
-	                  -1, nullptr, "Tint the regions updated in each frame" });
+	                  -1, nullptr, "Outline the regions updated in each frame" });
 	_args.push_back({ sdl_show_stats, COMMAND_LINE_VALUE_OPTIONAL, "<text scale>", nullptr, nullptr,
 	                  -1, nullptr, "Draw a frame/bandwidth/stage timing overlay" });
 	_args.push_back({ sdl_no_vsync, COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr, -1,

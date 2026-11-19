@@ -190,6 +190,9 @@ struct SdlD3D11Presenter::Impl
 	};
 	Overlay overlay;
 	Overlay notification;
+	/* One opaque pixel in the damage colour, stretched over each edge. */
+	ComPtr<ID3D11ShaderResourceView> damageView;
+	std::vector<SDL_Rect> damage;
 	bool setOverlay(Overlay& target, SDL_Surface* surface);
 
 	/* Set when a call fails because the device is gone. Everything is
@@ -478,6 +481,7 @@ void SdlD3D11Presenter::Impl::release()
 	releaseZeroCopy();
 	overlay.view.reset();
 	notification.view.reset();
+	damageView.reset();
 	frameView.reset();
 	frame.reset();
 	for (auto& texture : staging)
@@ -644,6 +648,28 @@ bool SdlD3D11Presenter::Impl::init()
 	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	if (failed(device->CreateBlendState(&blendDesc, overlayBlend.put()), "CreateBlendState"))
 		return false;
+
+	{
+		const UINT32 pink = 0xffff0080; /* BGRA in memory: 80 00 ff ff */
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = 1;
+		desc.Height = 1;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_IMMUTABLE;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		D3D11_SUBRESOURCE_DATA data = {};
+		data.pSysMem = &pink;
+		data.SysMemPitch = sizeof(pink);
+		ComPtr<ID3D11Texture2D> texture;
+		if (failed(device->CreateTexture2D(&desc, &data, texture.put()),
+		           "CreateTexture2D (damage)") ||
+		    failed(device->CreateShaderResourceView(texture.get(), nullptr, damageView.put()),
+		           "CreateShaderResourceView (damage)"))
+			return false;
+	}
 
 	D3D11_SAMPLER_DESC samplerDesc = {};
 	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -963,6 +989,11 @@ bool SdlD3D11Presenter::Impl::setOverlay(Overlay& target, SDL_Surface* surface)
 	return true;
 }
 
+void SdlD3D11Presenter::setDamage(const std::vector<SDL_Rect>& rects)
+{
+	_impl->damage = rects;
+}
+
 bool SdlD3D11Presenter::takeRedrawRequest()
 {
 	const auto redraw = _impl->redraw;
@@ -1028,6 +1059,33 @@ bool SdlD3D11Presenter::draw()
 		context->OMSetBlendState(_impl->overlayBlend.get(), nullptr, 0xffffffff);
 		context->Draw(3, 0);
 	};
+	if (!_impl->damage.empty() && _impl->damageView)
+	{
+		view = _impl->damageView.get();
+		context->PSSetShader(_impl->overlayPs.get(), nullptr, 0);
+		context->PSSetShaderResources(0, 1, &view);
+		context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+		const auto edge = [&](int x, int y, int w, int h)
+		{
+			viewport.TopLeftX = static_cast<float>(x);
+			viewport.TopLeftY = static_cast<float>(y);
+			viewport.Width = static_cast<float>(std::max(w, 1));
+			viewport.Height = static_cast<float>(std::max(h, 1));
+			context->RSSetViewports(1, &viewport);
+			context->Draw(3, 0);
+		};
+		/* Two pixels wide, inside the rect. */
+		for (const auto& r : _impl->damage)
+		{
+			const int t = std::min({ 2, r.w, r.h });
+			if (t <= 0)
+				continue;
+			edge(r.x, r.y, r.w, t);
+			edge(r.x, r.y + r.h - t, r.w, t);
+			edge(r.x, r.y, t, r.h);
+			edge(r.x + r.w - t, r.y, t, r.h);
+		}
+	}
 	drawOverlay(_impl->overlay, 0);
 	drawOverlay(_impl->notification,
 	            std::max(0, (static_cast<int>(_impl->backW) - _impl->notification.w) / 2));
