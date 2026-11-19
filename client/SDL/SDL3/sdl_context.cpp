@@ -1373,6 +1373,7 @@ bool SdlContext::addVirtualMonitor()
 		if (!updateWindowList())
 			return false;
 	}
+	identifyMonitors();
 	return setResizeable(resizeable()) && getDisplayChannelContext().addTimer();
 }
 
@@ -1397,6 +1398,8 @@ bool SdlContext::removeVirtualMonitor(SDL_WindowID id)
 		if (!updateWindowList())
 			return false;
 	}
+	/* The numbers of the windows right of it went down by one. */
+	identifyMonitors();
 	return getDisplayChannelContext().addTimer();
 }
 
@@ -3036,10 +3039,27 @@ bool SdlContext::setGrabKeyboard(bool enter)
 
 void SdlContext::notify(const std::string& text, Uint32 hideAfterMs)
 {
-	const auto serial = ++_notificationSerial;
 	bool changed = false;
 	for (auto& window : _windows)
 		changed |= window.second.setNotification(text);
+	notified(changed, hideAfterMs);
+}
+
+void SdlContext::identifyMonitors()
+{
+	bool changed = false;
+	for (auto& window : _windows)
+	{
+		auto& w = window.second;
+		changed |=
+		    w.setNotification("Monitor " + std::to_string(w.monitorIndex() + 1), 40.0f);
+	}
+	notified(changed, 3000);
+}
+
+void SdlContext::notified(bool changed, Uint32 hideAfterMs)
+{
+	const auto serial = ++_notificationSerial;
 	if (changed)
 		requestRedraw();
 	if (hideAfterMs == 0)

@@ -1201,7 +1201,8 @@ static SDL_Surface* renderTextBox(const std::vector<std::string>& lines, const w
 /* shortcut: only the Windows presenter draws notifications; the SDL renderer
  * path (RemoteApp, other platforms) would need its own drawing and a way to
  * present without a new frame. */
-bool SdlWindow::setNotification([[maybe_unused]] const std::string& text)
+bool SdlWindow::setNotification([[maybe_unused]] const std::string& text,
+                                [[maybe_unused]] float fontSize)
 {
 #if defined(_WIN32)
 	if (!_presenter || (text == _notificationText))
@@ -1209,8 +1210,8 @@ bool SdlWindow::setNotification([[maybe_unused]] const std::string& text)
 	_notificationText = text;
 	SDL_Surface* surface = nullptr;
 	if (!text.empty())
-		surface = renderTextBox({ text }, L"Segoe UI", 15.0f, SDL_GetWindowDisplayScale(_window),
-		                        0.0f, 16.0f);
+		surface = renderTextBox({ text }, L"Segoe UI", fontSize,
+		                        SDL_GetWindowDisplayScale(_window), 0.0f, 16.0f);
 
 	std::unique_lock lock(_notificationLock);
 	_notification.reset(surface);
