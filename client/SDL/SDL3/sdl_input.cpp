@@ -682,6 +682,26 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 				             2000);
 				return keyboard_sync_state();
 			}
+			if (ev.scancode == _hotkeyHelp)
+			{
+				WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s+<%s> pressed, showing the hotkeys",
+				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyHelp));
+				const auto key = [](uint32_t scancode)
+				{ return std::string(SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode))); };
+				/* The modifiers alone: the unknown scancode has an empty name. */
+				auto mods = hotkeyName(SDL_SCANCODE_UNKNOWN);
+				if (!mods.empty())
+					mods.pop_back();
+				_sdl->notify("Hold " + mods + " and press\n" + key(_hotkeyGrab) +
+				                 "\tcapture or release the keyboard\n" + key(_hotkeyFullscreen) +
+				                 "\tfullscreen\n" + key(_hotkeyAddMonitor) + " / " +
+				                 key(_hotkeyRemoveMonitor) + "\tadd or remove a monitor\n" +
+				                 key(_hotkeyStats) + "\tstats\n" + key(_hotkeyDamage) +
+				                 "\tdamage painting\n" + key(_hotkeyMinimize) + "\tminimize\n" +
+				                 key(_hotkeyDisconnect) + "\tdisconnect",
+				             6000);
+				return keyboard_sync_state();
+			}
 		}
 	}
 
@@ -795,6 +815,7 @@ sdlInput::sdlInput(SdlContext* sdl)
 	_hotkeyRemoveMonitor = prefKeyValue("SDL_RemoveMonitor", SDL_SCANCODE_X);
 	_hotkeyStats = prefKeyValue("SDL_Stats", SDL_SCANCODE_A);
 	_hotkeyDamage = prefKeyValue("SDL_Damage", SDL_SCANCODE_P);
+	_hotkeyHelp = prefKeyValue("SDL_Help", SDL_SCANCODE_H);
 }
 
 sdlInput::~sdlInput()
