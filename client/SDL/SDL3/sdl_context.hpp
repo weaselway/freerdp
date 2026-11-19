@@ -90,6 +90,8 @@ class SdlContext
 	 * SDL_EVENT_USER_HIDE_NOTIFICATION that timer sends. */
 	void notify(const std::string& text, Uint32 hideAfterMs);
 	void hideNotification(Uint32 serial);
+	/* Show each window's monitor number in it for a few seconds. */
+	void identifyMonitors();
 
 	[[nodiscard]] rdpContext* context() const;
 	[[nodiscard]] rdpClientContext* common() const;
@@ -314,6 +316,8 @@ class SdlContext
 	bool _grabMouse = false;
 	bool _grabKeyboard = false;
 	Uint32 _notificationSerial = 0;
+	/* After setting notifications: redraw if changed, hide them later. */
+	void notified(bool changed, Uint32 hideAfterMs);
 
 	/* RemoteApp pointer state */
 	struct

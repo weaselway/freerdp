@@ -166,10 +166,10 @@ class SdlWindow
 	 * stderr goes nowhere when started from WSL. Turns the stats on. */
 	static bool setStatsLog(const char* path);
 
-	/* A notification centered at the top; empty text hides it. SDL thread.
-	 * Shows from the next present, so ask for a redraw when this returns true.
-	 * Only the presenter draws it. */
-	[[nodiscard]] bool setNotification(const std::string& text);
+	/* A notification centered at the top, fontSize in points; empty text
+	 * hides it. SDL thread. Shows from the next present, so ask for a redraw
+	 * when this returns true. Only the presenter draws it. */
+	[[nodiscard]] bool setNotification(const std::string& text, float fontSize = 15.0f);
 
 	/* Where a frame's time goes, in the order the stages run. Each is summed
 	 * over one frame (a frame can be several blits) and shown by the stats
