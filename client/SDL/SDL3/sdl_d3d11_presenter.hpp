@@ -103,6 +103,8 @@ class SdlD3D11Presenter
 	[[nodiscard]] bool setOverlay(SDL_Surface* surface);
 	/* The same, centered at the top edge. */
 	[[nodiscard]] bool setNotification(SDL_Surface* surface);
+	/* Rects (window pixels) outlined by the next draw(). */
+	void setDamage(const std::vector<SDL_Rect>& rects);
 
 	/* True once after the device was lost and set up again: the desktop
 	 * texture is empty and needs a full upload. */

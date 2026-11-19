@@ -673,6 +673,15 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 				_sdl->requestRedraw();
 				return keyboard_sync_state();
 			}
+			if (ev.scancode == _hotkeyDamage)
+			{
+				WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s+<%s> pressed, toggling damage painting",
+				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyDamage));
+				SdlWindow::setShowDamage(!SdlWindow::showDamage());
+				_sdl->notify(SdlWindow::showDamage() ? "Damage painting on" : "Damage painting off",
+				             2000);
+				return keyboard_sync_state();
+			}
 		}
 	}
 
@@ -785,6 +794,7 @@ sdlInput::sdlInput(SdlContext* sdl)
 	_hotkeyAddMonitor = prefKeyValue("SDL_AddMonitor", SDL_SCANCODE_N);
 	_hotkeyRemoveMonitor = prefKeyValue("SDL_RemoveMonitor", SDL_SCANCODE_X);
 	_hotkeyStats = prefKeyValue("SDL_Stats", SDL_SCANCODE_A);
+	_hotkeyDamage = prefKeyValue("SDL_Damage", SDL_SCANCODE_P);
 }
 
 sdlInput::~sdlInput()

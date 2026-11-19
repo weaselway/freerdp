@@ -75,9 +75,8 @@ class SdlWindow
 
 	/* /sdl-presenter (Windows, on by default): draw with our own Direct3D 11
 	 * device instead of an SDL_Renderer. Process wide, set before any window
-	 * exists; turned off again if a window can't set it up. /sdl-show-damage
-	 * needs the SDL renderer and wins. A window drawing this way must only be
-	 * drawn to from the context's render thread. */
+	 * exists; turned off again if a window can't set it up. A window drawing
+	 * this way must only be drawn to from the context's render thread. */
 	static void setPresenter(bool enable);
 	[[nodiscard]] static bool presenterEnabled();
 
@@ -150,10 +149,11 @@ class SdlWindow
 	                      bool dashedBorder = true);
 	void updateSurface();
 
-	/* /sdl-show-damage: tint the regions updated this frame, to make the
-	 * incremental update path visible. Process wide, set from the command
-	 * line before any window exists. */
+	/* /sdl-show-damage: outline the regions updated this frame, to make the
+	 * incremental update path visible. Process wide; the damage hotkey
+	 * toggles it from the SDL thread. */
 	static void setShowDamage(bool enable);
+	[[nodiscard]] static bool showDamage();
 
 	/* /sdl-show-stats[:<scale>]: draw a counter overlay in the top left corner.
 	 * The scale, if > 0, is the text scale; the built-in debug font is 8px,
@@ -232,7 +232,6 @@ class SdlWindow
 	void ensureRenderTarget();
 	bool ensureGdiTexture(SDL_Surface* surface);
 
-	[[nodiscard]] static bool showDamage();
 	[[nodiscard]] static bool vsync();
 	/* Folds the frame's stage times into the stats. intervalNs is the time
 	 * since the window's previous present; late is 1 if the frame missed its
@@ -261,11 +260,12 @@ class SdlWindow
 
 	[[nodiscard]] bool presenterUpload(SDL_Surface* surface, SDL_Point offset,
 	                                   const SDL_FPoint& scale, const std::vector<SDL_Rect>& rects);
-	void presenterPresent();
+	void presenterPresent(const std::vector<SDL_Rect>& damage);
 	void recordPresentTiming();
 
-	/* Regions blitted since the last present, in render-target coordinates.
-	 * Only collected when showDamage() is on. */
+	/* Regions blitted since the last present, in render-target coordinates;
+	 * with the presenter in window pixels. Only collected when showDamage()
+	 * is on. */
 	std::vector<SDL_Rect> _damageRects;
 
 	/* Counters for the overlay, accumulated over a sampling window and only

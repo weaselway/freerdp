@@ -85,7 +85,7 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	std::ignore = SDL_SyncWindow(_window);
 
 #if defined(_WIN32)
-	if (presenter && presenterEnabled() && !showDamage())
+	if (presenter && presenterEnabled())
 	{
 		auto hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(_window),
 		                                   SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
@@ -420,6 +420,26 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 	}
 	_gdiTextureW = surface->w;
 	_gdiTextureH = surface->h;
+
+	/* In window pixels, where the presenter draws them. */
+	if (showDamage())
+	{
+		const auto toWindow = [&](const SDL_Rect& r)
+		{
+			const auto x0 = static_cast<float>(r.x) * scale.x;
+			const auto y0 = static_cast<float>(r.y) * scale.y;
+			const auto x1 = static_cast<float>(r.x + r.w) * scale.x;
+			const auto y1 = static_cast<float>(r.y + r.h) * scale.y;
+			_damageRects.push_back({ offset.x + static_cast<int>(std::floor(x0)),
+			                         offset.y + static_cast<int>(std::floor(y0)),
+			                         static_cast<int>(std::ceil(x1) - std::floor(x0)),
+			                         static_cast<int>(std::ceil(y1) - std::floor(y0)) });
+		};
+		if (rects.empty())
+			toWindow({ 0, 0, surface->w, surface->h });
+		for (const auto& r : rects)
+			toWindow(r);
+	}
 
 	if (!_presentPending)
 	{
@@ -762,7 +782,7 @@ bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& ds
 
 /* Set from the command line before the first window is created, read from the
  * SDL thread only. */
-static bool s_showDamage = false;
+static std::atomic<bool> s_showDamage{ false }; /* the hotkey toggles it */
 static std::atomic<bool> s_showStats{ false }; /* the hotkey toggles it */
 static float s_statsScale = 2.0f;
 static const float s_statsLineHeight = static_cast<float>(SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE) + 2.0f;
@@ -893,7 +913,7 @@ void SdlWindow::presentSlot()
 	_presentSlot = true;
 }
 
-void SdlWindow::presenterPresent()
+void SdlWindow::presenterPresent(const std::vector<SDL_Rect>& damage)
 {
 #if defined(_WIN32)
 	const auto drawStart = SDL_GetTicksNS();
@@ -906,6 +926,7 @@ void SdlWindow::presenterPresent()
 		if (_notificationChanged && _presenter->setNotification(_notification.get()))
 			_notificationChanged = false;
 	}
+	_presenter->setDamage(damage);
 	if (!_presenter->draw())
 		return;
 	const auto presentStart = SDL_GetTicksNS();
@@ -1634,7 +1655,7 @@ void SdlWindow::updateSurface()
 
 	if (_presenter)
 	{
-		presenterPresent();
+		presenterPresent(damage);
 		return;
 	}
 
