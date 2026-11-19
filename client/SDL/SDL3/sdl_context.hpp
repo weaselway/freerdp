@@ -378,6 +378,9 @@ class SdlContext
 		 * superseded and can be acked. 0 = nothing drawn yet. */
 		UINT64 drawnPresentId = 0;
 		Uint64 lastQueuedAtNS = 0; /* SDL_GetTicksNS() of the newest present */
+		/* While the stats are on: time between presents, 0 for the first,
+		 * handed to the window at its next upload. */
+		std::vector<Uint64> arrivalsNS;
 	};
 
 	std::map<UINT64, GfxRedirBuffer> _gfxRedirBuffers;

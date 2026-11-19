@@ -197,14 +197,56 @@ class SdlWindow
 		STAT_COUNT
 	};
 
-	/* SDL thread only. No-ops unless showStats() is on. */
-	static void addStat(StatStage stage, Uint64 ns);
+	/* The overlay's numbers for one window, so windows at different refresh
+	 * rates each show their own frames. frame collects the frame being drawn
+	 * and is folded into stages when it is presented. */
+	struct FrameStats
+	{
+		struct Stage
+		{
+			Uint64 sum = 0;
+			Uint64 max = 0;
+			Uint64 count = 0;
+		};
+		/* One frame for the graphs. */
+		struct Sample
+		{
+			std::array<float, STAT_COUNT> ms{}; /* stage times */
+			float intervalMs = 0.0f; /* since the window's previous present, 0 for the first */
+			bool late = false;
+			bool dropped = false; /* it replaced frames that were never shown */
+		};
+		std::array<Stage, STAT_COUNT> stages{};
+		std::array<Uint64, STAT_COUNT> frame{};
+		std::array<bool, STAT_COUNT> frameHas{};
+		Uint64 frameQueuedAt = 0;
+		Uint64 frameDropped = 0; /* replaced by the frame being drawn, never shown */
+		/* Per sampling window: frames that arrived and the time between them,
+		 * each frame's latency (queued -> presented), and of the frames whose
+		 * deadline is known, how many missed it. */
+		Uint64 framesIn = 0;
+		std::vector<float> arrivalMs;
+		std::vector<float> latencyMs;
+		Uint64 lateFrames = 0;
+		Uint64 deadlineFrames = 0;
+		Uint64 droppedFrames = 0;
+		/* The last frames for the graphs, oldest at historyNext once full. */
+		std::array<Sample, 512> history{};
+		size_t historyNext = 0;
+		size_t historyCount = 0;
+	};
+
+	/* The drawing thread only, like everything below. No-ops unless
+	 * showStats() is on. */
+	void addStat(StatStage stage, Uint64 ns);
+	/* STAT_ACK: an ack delays the frame drawn and not shown yet, if any. */
+	void addAckStat(Uint64 ns);
 	/* SDL_GetTicksNS() at which the frame about to be drawn was queued, and
 	 * how many frames that arrived since the last one drawn it replaces. */
 	void setFrameQueuedAt(Uint64 ns, Uint64 skipped);
-	/* Any thread: a frame arrived from the server, intervalNs after the one
-	 * before for the same window, 0 for its first. */
-	static void countFrameIn(Uint64 intervalNs);
+	/* Frames arrived from the server, each intervalNs after the one before,
+	 * 0 for the first. */
+	void countFramesIn(const std::vector<Uint64>& intervalsNs);
 
   protected:
 	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags,
@@ -241,6 +283,7 @@ class SdlWindow
 	void commitFrameStats(Uint64 intervalNs, int late);
 	/* A frame was drawn and not presented yet. */
 	bool _frameUnshown = false;
+	FrameStats _frameStats;
 	/* See commitFrameStats(). */
 	[[nodiscard]] int missedVBlank(Uint64 queuedNs, Uint64 nowNs);
 	[[nodiscard]] Uint64 frameInterval(Uint64 nowNs);
