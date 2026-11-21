@@ -339,7 +339,8 @@ bool SdlWindow::drawRects(SDL_Surface* surface, SDL_Point offset,
 	return true;
 }
 
-static SDL_Rect scaledDstRect(const SDL_FPoint& scale, const SDL_Rect& srcRect)
+bool SdlWindow::drawScaledRect(SDL_Surface* surface, const SDL_FPoint& scale,
+                               const SDL_Rect& srcRect)
 {
 	SDL_Rect dstRect = {};
 	float ix = 0.0f;
@@ -352,13 +353,6 @@ static SDL_Rect scaledDstRect(const SDL_FPoint& scale, const SDL_Rect& srcRect)
 	dstRect.w = static_cast<Sint32>(sw);
 	dstRect.y = static_cast<Sint32>(iy);
 	dstRect.h = static_cast<Sint32>(sh);
-	return dstRect;
-}
-
-bool SdlWindow::drawScaledRect(SDL_Surface* surface, const SDL_FPoint& scale,
-                               const SDL_Rect& srcRect)
-{
-	auto dstRect = scaledDstRect(scale, srcRect);
 	return blit(surface, srcRect, dstRect);
 }
 
@@ -369,19 +363,9 @@ bool SdlWindow::drawScaledRects(SDL_Surface* surface, const SDL_FPoint& scale,
 	{
 		return drawScaledRect(surface, scale, { 0, 0, surface->w, surface->h });
 	}
-
-	/* Upload every dirty rect before drawing any of them: scaling filters linearly, so the
-	 * edge of each drawn rect also samples the texels just outside it. Drawn one by one,
-	 * those can be a neighbouring dirty rect that is not uploaded yet, and the old picture
-	 * stays behind as a faint line along the edge until that area changes again. */
 	for (const auto& srcRect : rects)
 	{
-		if (!upload(surface, srcRect))
-			return false;
-	}
-	for (const auto& srcRect : rects)
-	{
-		if (!render(srcRect, scaledDstRect(scale, srcRect)))
+		if (!drawScaledRect(surface, scale, srcRect))
 			return false;
 	}
 	return true;
@@ -600,11 +584,6 @@ bool SdlWindow::ensureGdiTexture(SDL_Surface* surface)
 
 bool SdlWindow::blit(SDL_Surface* surface, const SDL_Rect& srcRect, SDL_Rect& dstRect)
 {
-	return upload(surface, srcRect) && render(srcRect, dstRect);
-}
-
-bool SdlWindow::upload(SDL_Surface* surface, const SDL_Rect& srcRect)
-{
 	if (!_renderer || !surface)
 		return false;
 
@@ -623,13 +602,6 @@ bool SdlWindow::upload(SDL_Surface* surface, const SDL_Rect& srcRect)
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_UpdateTexture: %s", SDL_GetError());
 		return false;
 	}
-	return true;
-}
-
-bool SdlWindow::render(const SDL_Rect& srcRect, const SDL_Rect& dstRect)
-{
-	if (!_renderer || !_gdiTexture)
-		return false;
 
 	/* Render onto persistent render target to accumulate dirty rects */
 	if (!SDL_SetRenderTarget(_renderer, _renderTarget))
