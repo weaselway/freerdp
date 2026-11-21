@@ -702,12 +702,9 @@ static UINT gfxredir_on_data_received(IWTSVirtualChannelCallback* pChannelCallba
 
 	const size_t beg = Stream_GetPosition(data);
 
-	if ((error = gfxredir_read_header(data, &header)))
+	/* Also checks that the whole PDU is there. */
+	if ((error = gfxredir_read_header(data, &header, NULL)))
 		return error;
-
-	if ((header.length < GFXREDIR_HEADER_SIZE) ||
-	    !Stream_CheckAndLogRequiredLength(TAG, data, header.length - GFXREDIR_HEADER_SIZE))
-		return ERROR_INVALID_DATA;
 
 	switch (header.cmdId)
 	{
