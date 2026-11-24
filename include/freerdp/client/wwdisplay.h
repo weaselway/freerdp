@@ -38,6 +38,10 @@ extern "C"
 	typedef UINT (*pcWwDisplaySendPresentTiming)(WwDisplayClientContext* context, UINT16 monitor,
 	                                             UINT32 frames, INT32 slack_us);
 
+	/* Set by the client: the server's WWDISPLAY_INHIBIT_* flags, on the channel's
+	 * thread. 0 again when the channel closes. */
+	typedef void (*pcWwDisplayInhibit)(WwDisplayClientContext* context, UINT32 flags);
+
 	struct s_wwdisplay_client_context
 	{
 		void* handle;
@@ -45,6 +49,7 @@ extern "C"
 
 		pcWwDisplaySetRefreshRate SetRefreshRate;
 		pcWwDisplaySendPresentTiming SendPresentTiming;
+		pcWwDisplayInhibit Inhibit;
 	};
 
 #ifdef __cplusplus

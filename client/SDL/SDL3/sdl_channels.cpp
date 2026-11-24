@@ -34,6 +34,10 @@
 #include "sdl_context.hpp"
 #include "sdl_disp.hpp"
 
+#if defined(_WIN32)
+#include "sdl_win32_power.hpp"
+#endif
+
 /* gfxredir: shared-memory graphics redirection. The server writes frames into a
  * shared memory pool and tells us which rectangle changed; the SDL thread then
  * uploads that rectangle to its texture straight out of the mapping, with no
@@ -199,6 +203,12 @@ void sdl_OnChannelConnectedEventHandler(void* context, const ChannelConnectedEve
 		auto ww = reinterpret_cast<WwDisplayClientContext*>(e->pInterface);
 		WINPR_ASSERT(ww);
 		sdl->getDisplayChannelContext().initRefreshRate(ww);
+#if defined(_WIN32)
+		ww->Inhibit = [](WwDisplayClientContext*, UINT32 flags)
+		{ sdl_win32_power_inhibit(flags); };
+		/* Starts watching the lock state while the user is at the session. */
+		sdl_win32_power_inhibit(0);
+#endif
 	}
 	else
 		freerdp_client_OnChannelConnectedEventHandler(context, e);

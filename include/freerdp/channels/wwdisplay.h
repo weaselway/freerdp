@@ -24,7 +24,8 @@
 
 /*
  * What weaselwayd needs to know about each monitor of the client's that RDP
- * has no field for. The server opens the channel; the client sends.
+ * has no field for, and what the session asks of Windows. The server opens
+ * the channel.
  *
  * Every PDU, little endian: UINT16 type, UINT16 monitor, then the body. The
  * monitor is the index into the client's monitor layout, which is also the
@@ -39,12 +40,22 @@
  * shown, the 10th percentile over the last @frames frames; negative if they
  * were ready after it. Sent about twice a second while frames arrive and the
  * client waits for vblank, so the server can move its frames in time.
+ *
+ * WWDISPLAY_PDU_INHIBIT, from the server, monitor 0: UINT32 flags. What the
+ * session asks Windows not to do: WWDISPLAY_INHIBIT_SYSTEM to sleep,
+ * WWDISPLAY_INHIBIT_DISPLAY to turn the display off. Sent when the channel
+ * opens if not 0, and on every change. The client holds them for as long as
+ * the channel is open.
  */
 #define WWDISPLAY_CHANNEL_NAME "wwdisplay"
 #define WWDISPLAY_DVC_CHANNEL_NAME "Weaselway::Display"
 
 #define WWDISPLAY_PDU_REFRESH_RATE 1
 #define WWDISPLAY_PDU_PRESENT_TIMING 2
+#define WWDISPLAY_PDU_INHIBIT 3
+
+#define WWDISPLAY_INHIBIT_SYSTEM 0x1
+#define WWDISPLAY_INHIBIT_DISPLAY 0x2
 
 #define WWDISPLAY_MAX_MONITORS 16
 

@@ -58,11 +58,31 @@ static UINT wwdisplay_send_refresh_rate(WWDISPLAY_PLUGIN* ww, UINT16 monitor)
 	return ww->channel->Write(ww->channel, sizeof(pdu), pdu, nullptr);
 }
 
-static UINT
-wwdisplay_on_data_received(WINPR_ATTR_UNUSED IWTSVirtualChannelCallback* pChannelCallback,
-                           WINPR_ATTR_UNUSED wStream* data)
+static void wwdisplay_inhibit(WWDISPLAY_PLUGIN* ww, UINT32 flags)
 {
-	/* The server sends nothing yet. */
+	WLog_Print(ww->base.log, WLOG_DEBUG, "inhibit 0x%08" PRIx32, flags);
+	if (ww->context->Inhibit)
+		ww->context->Inhibit(ww->context, flags);
+}
+
+static UINT wwdisplay_on_data_received(IWTSVirtualChannelCallback* pChannelCallback, wStream* data)
+{
+	GENERIC_CHANNEL_CALLBACK* callback = (GENERIC_CHANNEL_CALLBACK*)pChannelCallback;
+	WINPR_ASSERT(callback);
+	WWDISPLAY_PLUGIN* ww = (WWDISPLAY_PLUGIN*)callback->plugin;
+	WINPR_ASSERT(ww);
+
+	if (!Stream_CheckAndLogRequiredLengthWLog(ww->base.log, data, 4))
+		return ERROR_INVALID_DATA;
+	const UINT16 type = Stream_Get_UINT16(data);
+	Stream_Seek_UINT16(data); /* monitor */
+
+	/* Other types are for a newer client. */
+	if (type != WWDISPLAY_PDU_INHIBIT)
+		return CHANNEL_RC_OK;
+	if (!Stream_CheckAndLogRequiredLengthWLog(ww->base.log, data, 4))
+		return ERROR_INVALID_DATA;
+	wwdisplay_inhibit(ww, Stream_Get_UINT32(data));
 	return CHANNEL_RC_OK;
 }
 
@@ -93,6 +113,7 @@ static UINT wwdisplay_on_close(IWTSVirtualChannelCallback* pChannelCallback)
 	if (ww->channel == callback->channel)
 		ww->channel = nullptr;
 	LeaveCriticalSection(&ww->lock);
+	wwdisplay_inhibit(ww, 0);
 
 	if (ww->base.listener_callback && ww->base.listener_callback->channel_callback == callback)
 		ww->base.listener_callback->channel_callback = nullptr;
