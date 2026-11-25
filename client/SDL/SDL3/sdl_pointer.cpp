@@ -249,6 +249,10 @@ bool sdl_Pointer_Set_Process(SdlContext* sdl)
 	};
 	if (!normal)
 		return true;
+	/* Copy, not blend: blending onto the empty surface would multiply the colors by their
+	 * alpha, and Windows reads cursor colors as straight alpha, so soft edges turn dark. */
+	if (!SDL_SetSurfaceBlendMode(ptr->image, SDL_BLENDMODE_NONE))
+		return false;
 	if (!SDL_BlitSurfaceScaled(ptr->image, nullptr, normal.get(), nullptr,
 	                           SDL_ScaleMode::SDL_SCALEMODE_LINEAR))
 	{
