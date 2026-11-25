@@ -101,8 +101,8 @@ class SdlD3D11Presenter
 	/* A BGRA32 surface with premultiplied alpha drawn over the top left
 	 * corner from the next draw() on; nullptr removes it. */
 	[[nodiscard]] bool setOverlay(SDL_Surface* surface);
-	/* The same, centered at the top edge. */
-	[[nodiscard]] bool setNotification(SDL_Surface* surface);
+	/* The same, centered at the top edge, or at the bottom edge. */
+	[[nodiscard]] bool setNotification(SDL_Surface* surface, bool bottom);
 	/* Rects (window pixels) outlined by the next draw(). */
 	void setDamage(const std::vector<SDL_Rect>& rects);
 

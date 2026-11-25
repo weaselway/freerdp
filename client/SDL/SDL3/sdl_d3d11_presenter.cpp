@@ -190,6 +190,7 @@ struct SdlD3D11Presenter::Impl
 	};
 	Overlay overlay;
 	Overlay notification;
+	bool notificationBottom = false;
 	/* One opaque pixel in the damage colour, stretched over each edge. */
 	ComPtr<ID3D11ShaderResourceView> damageView;
 	std::vector<SDL_Rect> damage;
@@ -954,8 +955,9 @@ bool SdlD3D11Presenter::setOverlay(SDL_Surface* surface)
 	return _impl->setOverlay(_impl->overlay, surface);
 }
 
-bool SdlD3D11Presenter::setNotification(SDL_Surface* surface)
+bool SdlD3D11Presenter::setNotification(SDL_Surface* surface, bool bottom)
 {
+	_impl->notificationBottom = bottom;
 	return _impl->setOverlay(_impl->notification, surface);
 }
 
@@ -1043,12 +1045,12 @@ bool SdlD3D11Presenter::draw()
 	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
 	context->Draw(3, 0);
 
-	const auto drawOverlay = [&](const Impl::Overlay& overlay, int x)
+	const auto drawOverlay = [&](const Impl::Overlay& overlay, int x, int y)
 	{
 		if (!overlay.view)
 			return;
 		viewport.TopLeftX = static_cast<float>(x);
-		viewport.TopLeftY = 0.0f;
+		viewport.TopLeftY = static_cast<float>(y);
 		viewport.Width = static_cast<float>(overlay.w);
 		viewport.Height = static_cast<float>(overlay.h);
 		context->RSSetViewports(1, &viewport);
@@ -1086,9 +1088,12 @@ bool SdlD3D11Presenter::draw()
 			edge(r.x + r.w - t, r.y, t, r.h);
 		}
 	}
-	drawOverlay(_impl->overlay, 0);
+	drawOverlay(_impl->overlay, 0, 0);
 	drawOverlay(_impl->notification,
-	            std::max(0, (static_cast<int>(_impl->backW) - _impl->notification.w) / 2));
+	            std::max(0, (static_cast<int>(_impl->backW) - _impl->notification.w) / 2),
+	            _impl->notificationBottom
+	                ? std::max(0, static_cast<int>(_impl->backH) - _impl->notification.h)
+	                : 0);
 	return true;
 }
 

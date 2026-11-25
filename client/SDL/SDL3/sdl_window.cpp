@@ -128,7 +128,8 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
       _monitor(other._monitor), _monitorIndex(other._monitorIndex.load()),
       _notificationText(std::move(other._notificationText)),
       _notification(std::move(other._notification)),
-      _notificationChanged(other._notificationChanged)
+      _notificationChanged(other._notificationChanged),
+      _notificationBottom(other._notificationBottom)
 {
 	other._window = nullptr;
 	other._renderer = nullptr;
@@ -932,7 +933,8 @@ void SdlWindow::presenterPresent(const std::vector<SDL_Rect>& damage)
 	_presentSlot = false;
 	{
 		std::unique_lock lock(_notificationLock);
-		if (_notificationChanged && _presenter->setNotification(_notification.get()))
+		if (_notificationChanged &&
+		    _presenter->setNotification(_notification.get(), _notificationBottom))
 			_notificationChanged = false;
 	}
 	_presenter->setDamage(damage);
@@ -1527,7 +1529,7 @@ static void drawStatsGraphs(SDL_Surface* surface, const SDL_Rect& area,
  * path (RemoteApp, other platforms) would need its own drawing and a way to
  * present without a new frame. */
 bool SdlWindow::setNotification([[maybe_unused]] const std::string& text,
-                                [[maybe_unused]] float fontSize)
+                                [[maybe_unused]] float fontSize, [[maybe_unused]] bool bottom)
 {
 #if defined(_WIN32)
 	if (!_presenter || (text == _notificationText))
@@ -1550,6 +1552,7 @@ bool SdlWindow::setNotification([[maybe_unused]] const std::string& text,
 	std::unique_lock lock(_notificationLock);
 	_notification.reset(surface);
 	_notificationChanged = true;
+	_notificationBottom = bottom;
 	return true;
 #else
 	return false;

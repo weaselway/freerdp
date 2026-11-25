@@ -91,6 +91,8 @@ class SdlContext
 	 * SDL_EVENT_USER_HIDE_NOTIFICATION that timer sends. */
 	void notify(const std::string& text, Uint32 hideAfterMs);
 	void hideNotification(Uint32 serial);
+	/* Text shown smaller at the bottom while no notification is; empty for none. */
+	void setHint(const std::string& text);
 	/* Show each window's monitor number in it for a few seconds. */
 	void identifyMonitors();
 
@@ -318,6 +320,8 @@ class SdlContext
 	bool _grabMouse = false;
 	bool _grabKeyboard = false;
 	Uint32 _notificationSerial = 0;
+	bool _notifying = false;
+	std::string _hint;
 	/* After setting notifications: redraw if changed, hide them later. */
 	void notified(bool changed, Uint32 hideAfterMs);
 

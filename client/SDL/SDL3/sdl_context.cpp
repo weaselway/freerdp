@@ -3062,14 +3062,25 @@ bool SdlContext::setGrabKeyboard(bool enter)
 
 void SdlContext::notify(const std::string& text, Uint32 hideAfterMs)
 {
+	_notifying = !text.empty();
+	const bool hint = !_notifying && !_hint.empty();
 	bool changed = false;
 	for (auto& window : _windows)
-		changed |= window.second.setNotification(text);
+		changed |= hint ? window.second.setNotification(_hint, 12.0f, true)
+		                : window.second.setNotification(text);
 	notified(changed, hideAfterMs);
+}
+
+void SdlContext::setHint(const std::string& text)
+{
+	_hint = text;
+	if (!_notifying)
+		notify({}, 0);
 }
 
 void SdlContext::identifyMonitors()
 {
+	_notifying = true;
 	bool changed = false;
 	for (auto& window : _windows)
 	{
