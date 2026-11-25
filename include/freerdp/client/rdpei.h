@@ -65,6 +65,7 @@ extern "C"
 
 	typedef UINT (*pcRdpeiSuspendTouch)(RdpeiClientContext* context);
 	typedef UINT (*pcRdpeiResumeTouch)(RdpeiClientContext* context);
+	typedef UINT (*pcRdpeiFlushTouch)(RdpeiClientContext* context);
 
 	struct s_rdpei_client_context
 	{
@@ -101,6 +102,11 @@ extern "C"
 		WINPR_ATTR_NODISCARD pcRdpeiPenRawEventVA PenRawEventVA;
 
 		UINT32 clientFeaturesMask;
+
+		/* Sends the touch contacts given since the last frame as one frame now,
+		 * for a client that knows where its device's frames end. Without it,
+		 * a thread sends them at most every 20 ms. */
+		WINPR_ATTR_NODISCARD pcRdpeiFlushTouch FlushTouch;
 	};
 
 #ifdef __cplusplus

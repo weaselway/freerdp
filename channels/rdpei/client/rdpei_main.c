@@ -457,6 +457,10 @@ static BOOL rdpei_poll_run_unlocked(rdpContext* context, void* userdata)
 
 	const UINT64 now = GetTickCount64();
 
+	/* Reset first: left set, the thread spins until the 20 ms are up. What
+	 * is still dirty then goes out on the thread's 20 ms timeout. */
+	(void)ResetEvent(rdpei->event);
+
 	/* Send an event every ~20ms */
 	if ((now < rdpei->lastPollEventTime) || (now - rdpei->lastPollEventTime < 20ULL))
 		return TRUE;
@@ -464,8 +468,6 @@ static BOOL rdpei_poll_run_unlocked(rdpContext* context, void* userdata)
 	rdpei->lastPollEventTime = now;
 
 	const UINT error = rdpei_update(rdpei->base.log, rdpei->context);
-
-	(void)ResetEvent(rdpei->event);
 
 	if (error != CHANNEL_RC_OK)
 	{
@@ -476,6 +478,21 @@ static BOOL rdpei_poll_run_unlocked(rdpContext* context, void* userdata)
 	}
 
 	return TRUE;
+}
+
+static UINT rdpei_flush_touch(RdpeiClientContext* context)
+{
+	if (!context || !context->handle)
+		return ERROR_INTERNAL_ERROR;
+
+	RDPEI_PLUGIN* rdpei = (RDPEI_PLUGIN*)context->handle;
+	EnterCriticalSection(&rdpei->lock);
+	const UINT error = rdpei_add_frame(context);
+	/* The next contacts belong to the next frame, which the client flushes too:
+	 * the poll thread must not send part of it. */
+	rdpei->lastPollEventTime = GetTickCount64();
+	LeaveCriticalSection(&rdpei->lock);
+	return error;
 }
 
 static BOOL rdpei_poll_run(rdpContext* context, void* userdata)
@@ -1540,6 +1557,7 @@ static UINT init_plugin_cb(GENERIC_DYNVC_PLUGIN* base, rdpContext* rcontext, rdp
 	context->TouchCancel = rdpei_touch_cancel;
 	context->TouchRawEvent = rdpei_touch_raw_event;
 	context->TouchRawEventVA = rdpei_touch_raw_event_va;
+	context->FlushTouch = rdpei_flush_touch;
 	context->AddPen = rdpei_add_pen;
 	context->PenBegin = rdpei_pen_begin;
 	context->PenUpdate = rdpei_pen_update;
