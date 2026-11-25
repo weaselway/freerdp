@@ -69,6 +69,15 @@ again, or `cmake --build build/freerdp`.
   before the server's capabilities say that it takes relative motion, so the
   client checks the focus again once connected.
 
+- With `/sdl-touchpad-raw` the SDL3 client forwards every touchpad contact,
+  not only gestures of three or more fingers, and the server moves its
+  pointer, taps and scrolls with them. While fingers are down the client
+  holds the Windows cursor with a 1x1 `ClipCursor` (SDL's mouse rect while
+  `/mouse:relative` has the mouse), drops the mouse input Windows makes of
+  the touchpad, and follows the positions the server reports. It sets
+  `GrabMouse` for that. Right Ctrl+Right Shift+T turns it off and on
+  (`client/SDL/SDL3/sdl_win32_touchpad.cpp`).
+
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
   that.
