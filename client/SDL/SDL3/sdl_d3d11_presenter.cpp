@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 
 #define COBJMACROS
@@ -1143,11 +1144,14 @@ bool SdlD3D11Presenter::draw()
 	_impl->animating = _impl->notification.view && (progress < 1.0f);
 	if (_impl->notificationFadingOut && (progress >= 1.0f))
 		_impl->notification.view.reset();
+	/* It slides in from its edge by a sixth of its height, and back out. */
+	const auto slide = static_cast<int>(
+	    std::lround((1.0f - shown) * static_cast<float>(_impl->notification.h) / 6.0f));
 	drawOverlay(_impl->notification,
 	            std::max(0, (static_cast<int>(_impl->backW) - _impl->notification.w) / 2),
 	            _impl->notificationBottom
-	                ? std::max(0, static_cast<int>(_impl->backH) - _impl->notification.h)
-	                : 0,
+	                ? std::max(0, static_cast<int>(_impl->backH) - _impl->notification.h) + slide
+	                : -slide,
 	            shown);
 	return true;
 }
