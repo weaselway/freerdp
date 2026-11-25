@@ -85,13 +85,13 @@ void sdl_win32_edge_push_handle(SdlContext* sdl, const tagMSG* msg)
 	if ((dx == 0) && (dy == 0))
 		return;
 
-	/* With relative mouse events in use the motion goes out relative anyway;
-	 * a RemoteApp window's edges are not the session's. */
+	/* With the mouse grabbed for /mouse:relative the motion goes out relative
+	 * anyway; a RemoteApp window's edges are not the session's. */
 	auto cctx = sdl->common();
 	const auto settings = cctx->context.settings;
 	if (!freerdp_settings_get_bool(settings, FreeRDP_HasRelativeMouseEvent) ||
 	    freerdp_settings_get_bool(settings, FreeRDP_RemoteApplicationMode) ||
-	    freerdp_client_use_relative_mouse_events(cctx))
+	    (freerdp_client_use_relative_mouse_events(cctx) && sdl->grabMouse()))
 		return;
 
 	SDL_Window* window = SDL_GetMouseFocus();
