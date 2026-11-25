@@ -78,6 +78,15 @@ again, or `cmake --build build/freerdp`.
   `GrabMouse` for that. Right Ctrl+Right Shift+T turns it off and on
   (`client/SDL/SDL3/sdl_win32_touchpad.cpp`).
 
+- The RDPEI client sends touch frames from a thread, at most every 20 ms,
+  which Windows' 15.6 ms clock makes about 31 ms. `FlushTouch`, new in
+  `RdpeiClientContext`, sends the contacts given so far as one frame right
+  away. The SDL3 client calls it when its queue holds no more finger
+  events. SDL queues all fingers of one `WM_TOUCH` message together, and
+  the raw touchpad code all fingers of one report, so the server gets the
+  touchscreen's or touchpad's report rate. The thread no longer spins while it
+  waits out the 20 ms.
+
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
   that.

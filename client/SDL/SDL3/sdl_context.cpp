@@ -2085,7 +2085,19 @@ bool SdlContext::handleEvent(const SDL_Event& ev)
 		case SDL_EVENT_FINGER_MOTION:
 		{
 			const auto& cev = ev.tfinger;
-			return handleEvent(cev);
+			if (!handleEvent(cev))
+				return false;
+
+			/* SDL queues all fingers of one WM_TOUCH message, and the touchpad
+			 * code all fingers of one report, in one go: when no finger event
+			 * is left, the frame is complete. Send it now instead of by RDPEI's
+			 * 20 ms timer. */
+			auto rdpei = common()->rdpei;
+			if (rdpei && rdpei->FlushTouch &&
+			    !SDL_HasEvents(SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_CANCELED) &&
+			    (rdpei->FlushTouch(rdpei) != CHANNEL_RC_OK))
+				WLog_Print(getWLog(), WLOG_WARN, "sending a touch frame failed");
+			return true;
 		}
 		case SDL_EVENT_MOUSE_MOTION:
 
