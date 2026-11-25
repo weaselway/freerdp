@@ -53,6 +53,13 @@ again, or `cmake --build build/freerdp`.
   Windows power requests (`client/SDL/SDL3/sdl_win32_power.cpp`). The format
   is in `include/freerdp/channels/wwdisplay.h`.
 
+- Windows stops the cursor at the edge of the screen, so the absolute mouse
+  positions never push against the barriers a compositor puts there, such
+  as GNOME's hot corner. While the cursor sits on the edge of a session
+  window and Windows holds it there, the client reads the mouse's Raw Input
+  and sends what moves past the edge as RDP relative mouse events
+  (`client/SDL/SDL3/sdl_win32_edge_push.cpp`).
+
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
   that.

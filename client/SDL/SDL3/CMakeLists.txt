@@ -122,6 +122,7 @@ endif()
 
 if(WIN32)
   list(APPEND SRCS sdl_win32_touchpad.hpp sdl_win32_touchpad.cpp)
+  list(APPEND SRCS sdl_win32_edge_push.hpp sdl_win32_edge_push.cpp)
   list(APPEND SRCS sdl_win32_refresh_rate.hpp sdl_win32_refresh_rate.cpp)
   list(APPEND SRCS sdl_win32_vblank.hpp sdl_win32_vblank.cpp)
   list(APPEND SRCS sdl_win32_power.hpp sdl_win32_power.cpp)

@@ -76,6 +76,7 @@
 #include "sdl_prefs.hpp"
 #if defined(_WIN32)
 #include "sdl_win32_console.hpp"
+#include "sdl_win32_edge_push.hpp"
 #include "sdl_win32_touchpad.hpp"
 #endif
 #include "sdl_utils.hpp"
@@ -162,13 +163,13 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 #if defined(_WIN32)
 static bool s_touchpad = false;
 
-/* SDL has one Windows message hook. It never consumes a message: Raw Input
- * is a tap next to the normal mouse and keyboard messages. */
+/* SDL has one hook for all of them. It never consumes a message: Raw Input is
+ * a tap next to the normal mouse and keyboard messages. */
 static bool SDLCALL sdl_win32_message_hook(void* userdata, MSG* msg)
 {
 	if (s_touchpad)
 		sdl::win32::touchpad::handleMessage(msg);
-	(void)userdata;
+	sdl_win32_edge_push_handle(static_cast<SdlContext*>(userdata), msg);
 	return true;
 }
 #endif
@@ -780,6 +781,7 @@ int main(int argc, char* argv[])
 	if (sdl->touchpadGestures() && !touchpad)
 		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
 	s_touchpad = touchpad;
+	const bool edgePush = sdl_win32_edge_push_initialize();
 	SDL_SetWindowsMessageHook(sdl_win32_message_hook, sdl);
 #endif
 
@@ -792,6 +794,8 @@ int main(int argc, char* argv[])
 		    s_touchpad = false;
 		    if (touchpad)
 			    sdl::win32::touchpad::shutdown();
+		    if (edgePush)
+			    sdl_win32_edge_push_shutdown();
 #endif
 		    sdl->cleanup();
 		    freerdp_del_signal_cleanup_handler(sdl->context(), sdl_term_handler);
