@@ -19,6 +19,8 @@
 
 #pragma once
 
+struct tagMSG;
+
 namespace sdl
 {
 	namespace win32
@@ -39,10 +41,13 @@ namespace sdl
 		 * Enabled with /sdl-touchpad-gestures. */
 		namespace touchpad
 		{
-			/* Registers the Raw Input device and installs the global WM_INPUT
-			 * interception hook. Returns false if registration failed. */
+			/* Registers the Raw Input device. Returns false if registration
+			 * failed. */
 			[[nodiscard]] bool initialize();
 			void shutdown();
+
+			/* For each message of SDL's Windows message hook. */
+			void handleMessage(tagMSG* msg);
 
 			/* Lifts all contacts of a gesture in progress. Called when the
 			 * window loses focus (Alt+Tab, Win key, ...): no further reports

@@ -159,6 +159,20 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 	std::ignore = sdl_push_quit();
 }
 
+#if defined(_WIN32)
+static bool s_touchpad = false;
+
+/* SDL has one Windows message hook. It never consumes a message: Raw Input
+ * is a tap next to the normal mouse and keyboard messages. */
+static bool SDLCALL sdl_win32_message_hook(void* userdata, MSG* msg)
+{
+	if (s_touchpad)
+		sdl::win32::touchpad::handleMessage(msg);
+	(void)userdata;
+	return true;
+}
+#endif
+
 [[nodiscard]] static int sdl_run(SdlContext* sdl)
 {
 	int rc = -1;
@@ -765,6 +779,8 @@ int main(int argc, char* argv[])
 	const bool touchpad = sdl->touchpadGestures() && sdl::win32::touchpad::initialize();
 	if (sdl->touchpadGestures() && !touchpad)
 		WLog_WARN(SDL_TAG, "raw touchpad forwarding unavailable on this system");
+	s_touchpad = touchpad;
+	SDL_SetWindowsMessageHook(sdl_win32_message_hook, sdl);
 #endif
 
 	/* SDL cleanup code if the client exits */
@@ -772,6 +788,8 @@ int main(int argc, char* argv[])
 	    [&]()
 	    {
 #if defined(_WIN32)
+		    SDL_SetWindowsMessageHook(nullptr, nullptr);
+		    s_touchpad = false;
 		    if (touchpad)
 			    sdl::win32::touchpad::shutdown();
 #endif

@@ -752,21 +752,6 @@ namespace
 		msg->lParam |= static_cast<LPARAM>(KF_EXTENDED) << 16;
 	}
 
-	bool SDLCALL sdl_win32_raw_input_hook(void* userdata, MSG* msg)
-	{
-		(void)userdata;
-
-		finalizeStaleGesture();
-
-		if (msg)
-			fixNavigationKey(msg);
-
-		if (!msg || (msg->message != WM_INPUT))
-			return true;
-
-		handleRawInput(msg->lParam);
-		return true; /* never consume: Raw Input is a parallel tap, not exclusive */
-	}
 } // namespace
 
 namespace sdl
@@ -792,8 +777,6 @@ namespace sdl
 					return false;
 				}
 
-				SDL_SetWindowsMessageHook(sdl_win32_raw_input_hook, nullptr);
-
 				/* See kContactStaleTimeoutMs's comment: a message-only
 				 * (hwndTarget=nullptr) timer, so it's independent of any
 				 * particular window's lifetime and posts WM_TIMER straight
@@ -810,6 +793,17 @@ namespace sdl
 				return true;
 			}
 
+			void handleMessage(MSG* msg)
+			{
+				finalizeStaleGesture();
+
+				if (!msg)
+					return;
+				fixNavigationKey(msg);
+				if (msg->message == WM_INPUT)
+					handleRawInput(msg->lParam);
+			}
+
 			void cancelGesture()
 			{
 				endGesture("focus lost");
@@ -817,8 +811,6 @@ namespace sdl
 
 			void shutdown()
 			{
-				SDL_SetWindowsMessageHook(nullptr, nullptr);
-
 				if (g_staleWatchdogTimerId)
 				{
 					KillTimer(nullptr, g_staleWatchdogTimerId);
