@@ -446,6 +446,16 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 			toWindow(r);
 	}
 
+	markPresentPending(now);
+	return true;
+#else
+	return false;
+#endif
+}
+
+void SdlWindow::markPresentPending([[maybe_unused]] Uint64 now)
+{
+#if defined(_WIN32)
 	if (!_presentPending)
 	{
 		_presentPendingSince = now;
@@ -454,9 +464,6 @@ bool SdlWindow::presenterUpload(SDL_Surface* surface, SDL_Point offset, const SD
 		_presentPendingQpc = qpc.QuadPart;
 	}
 	_presentPending = true;
-	return true;
-#else
-	return false;
 #endif
 }
 
@@ -946,6 +953,9 @@ void SdlWindow::presenterPresent(const std::vector<SDL_Rect>& damage)
 	if (!_presenter->present())
 		return;
 	recordPresentTiming();
+	/* Each step of a fade is a present of its own, one per vblank. */
+	if (_presenter->animating())
+		markPresentPending(SDL_GetTicksNS());
 
 	if (showStats())
 	{

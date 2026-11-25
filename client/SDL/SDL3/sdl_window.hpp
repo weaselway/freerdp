@@ -304,6 +304,8 @@ class SdlWindow
 	void renderStatsText(SDL_Renderer* renderer);
 	[[nodiscard]] SDL_FRect statsBox() const;
 	void updatePresenterOverlay();
+	/* Has the render thread present at the next vblank. */
+	void markPresentPending(Uint64 now);
 	/* Follows setShowStats() from the drawing thread. */
 	void syncStatsToggle();
 	bool _statsOn = false;

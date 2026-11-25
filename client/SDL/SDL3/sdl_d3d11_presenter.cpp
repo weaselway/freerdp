@@ -98,11 +98,13 @@ namespace
 	    "  return o;\n"
 	    "}\n";
 
+	/* Premultiplied, so fading scales all four channels. */
 	const char overlayShader[] =
 	    "Texture2D tex : register(t0);\n"
 	    "SamplerState smp : register(s0);\n"
+	    "cbuffer fade : register(b0) { float alpha; };\n"
 	    "float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
-	    "  return tex.Sample(smp, uv);\n"
+	    "  return tex.Sample(smp, uv) * alpha;\n"
 	    "}\n";
 
 	/* Alpha is forced: the X in BGRX is not guaranteed to be 0xff. */
@@ -181,6 +183,8 @@ struct SdlD3D11Presenter::Impl
 	ComPtr<ID3D11PixelShader> ps;
 	ComPtr<ID3D11PixelShader> overlayPs;
 	ComPtr<ID3D11BlendState> overlayBlend;
+	/* The overlay shader's alpha. */
+	ComPtr<ID3D11Buffer> overlayFade;
 	ComPtr<ID3D11SamplerState> sampler;
 	struct Overlay
 	{
@@ -191,6 +195,11 @@ struct SdlD3D11Presenter::Impl
 	Overlay overlay;
 	Overlay notification;
 	bool notificationBottom = false;
+	/* When the notification began to fade in, or out with fadingOut. */
+	Uint64 notificationSince = 0;
+	bool notificationFadingOut = false;
+	/* The last draw() was in the middle of a fade. */
+	bool animating = false;
 	/* One opaque pixel in the damage colour, stretched over each edge. */
 	ComPtr<ID3D11ShaderResourceView> damageView;
 	std::vector<SDL_Rect> damage;
@@ -490,6 +499,7 @@ void SdlD3D11Presenter::Impl::release()
 	frameW = 0;
 	frameH = 0;
 	sampler.reset();
+	overlayFade.reset();
 	overlayBlend.reset();
 	overlayPs.reset();
 	ps.reset();
@@ -648,6 +658,13 @@ bool SdlD3D11Presenter::Impl::init()
 	blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	if (failed(device->CreateBlendState(&blendDesc, overlayBlend.put()), "CreateBlendState"))
+		return false;
+
+	D3D11_BUFFER_DESC fadeDesc = {};
+	fadeDesc.ByteWidth = 16;
+	fadeDesc.Usage = D3D11_USAGE_DEFAULT;
+	fadeDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	if (failed(device->CreateBuffer(&fadeDesc, nullptr, overlayFade.put()), "CreateBuffer (fade)"))
 		return false;
 
 	{
@@ -957,8 +974,25 @@ bool SdlD3D11Presenter::setOverlay(SDL_Surface* surface)
 
 bool SdlD3D11Presenter::setNotification(SDL_Surface* surface, bool bottom)
 {
+	/* Hiding fades the one shown out; draw() drops it after. */
+	if (!surface)
+	{
+		if (_impl->notification.view && !_impl->notificationFadingOut)
+		{
+			_impl->notificationFadingOut = true;
+			_impl->notificationSince = SDL_GetTicksNS();
+		}
+		return true;
+	}
 	_impl->notificationBottom = bottom;
+	_impl->notificationFadingOut = false;
+	_impl->notificationSince = SDL_GetTicksNS();
 	return _impl->setOverlay(_impl->notification, surface);
+}
+
+bool SdlD3D11Presenter::animating() const
+{
+	return _impl->animating;
 }
 
 bool SdlD3D11Presenter::Impl::setOverlay(Overlay& target, SDL_Surface* surface)
@@ -1045,10 +1079,18 @@ bool SdlD3D11Presenter::draw()
 	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
 	context->Draw(3, 0);
 
-	const auto drawOverlay = [&](const Impl::Overlay& overlay, int x, int y)
+	auto fade = _impl->overlayFade.get();
+	const auto setFade = [&](float alpha)
+	{
+		const std::array<float, 4> data = { alpha, 0.0f, 0.0f, 0.0f };
+		context->UpdateSubresource(fade, 0, nullptr, data.data(), 0, 0);
+		context->PSSetConstantBuffers(0, 1, &fade);
+	};
+	const auto drawOverlay = [&](const Impl::Overlay& overlay, int x, int y, float alpha)
 	{
 		if (!overlay.view)
 			return;
+		setFade(alpha);
 		viewport.TopLeftX = static_cast<float>(x);
 		viewport.TopLeftY = static_cast<float>(y);
 		viewport.Width = static_cast<float>(overlay.w);
@@ -1063,6 +1105,7 @@ bool SdlD3D11Presenter::draw()
 	};
 	if (!_impl->damage.empty() && _impl->damageView)
 	{
+		setFade(1.0f);
 		view = _impl->damageView.get();
 		context->PSSetShader(_impl->overlayPs.get(), nullptr, 0);
 		context->PSSetShaderResources(0, 1, &view);
@@ -1088,12 +1131,24 @@ bool SdlD3D11Presenter::draw()
 			edge(r.x + r.w - t, r.y, t, r.h);
 		}
 	}
-	drawOverlay(_impl->overlay, 0, 0);
+	drawOverlay(_impl->overlay, 0, 0, 1.0f);
+
+	/* Fades in over 200 ms and out over 150 ms, quick at first. */
+	const auto fadeMs = _impl->notificationFadingOut ? 150.0f : 200.0f;
+	const auto elapsedMs =
+	    static_cast<float>(SDL_GetTicksNS() - _impl->notificationSince) / 1000000.0f;
+	const auto progress = std::clamp(elapsedMs / fadeMs, 0.0f, 1.0f);
+	const auto eased = 1.0f - ((1.0f - progress) * (1.0f - progress) * (1.0f - progress));
+	const auto shown = _impl->notificationFadingOut ? 1.0f - eased : eased;
+	_impl->animating = _impl->notification.view && (progress < 1.0f);
+	if (_impl->notificationFadingOut && (progress >= 1.0f))
+		_impl->notification.view.reset();
 	drawOverlay(_impl->notification,
 	            std::max(0, (static_cast<int>(_impl->backW) - _impl->notification.w) / 2),
 	            _impl->notificationBottom
 	                ? std::max(0, static_cast<int>(_impl->backH) - _impl->notification.h)
-	                : 0);
+	                : 0,
+	            shown);
 	return true;
 }
 
