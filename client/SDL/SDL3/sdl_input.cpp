@@ -628,12 +628,10 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyGrab));
 				if (!keyboard_sync_state())
 					return false;
-				const auto rc = keyboard_grab(ev.windowID, !_sdl->grabKeyboard());
-				const auto key = hotkeyName(_hotkeyGrab);
-				_sdl->notify(_sdl->grabKeyboard()
-				                 ? "Keyboard captured. Press " + key + " to release."
-				                 : "Keyboard released. Press " + key + " to capture.",
-				             2000);
+				const auto relative = relativeMouse();
+				const auto rc =
+				    setGrab(ev.windowID, relative ? !_sdl->grabMouse() : !_sdl->grabKeyboard());
+				notifyGrab(relative ? _sdl->grabMouse() : _sdl->grabKeyboard());
 				return rc;
 			}
 			if (ev.scancode == _hotkeyDisconnect)
@@ -699,12 +697,13 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 				if (!mods.empty())
 					mods.pop_back();
 				_sdl->notify("Hold " + mods + " and press\n" + key(_hotkeyGrab) +
-				                 "\tcapture or release the keyboard\n" + key(_hotkeyFullscreen) +
-				                 "\tfullscreen\n" + key(_hotkeyAddMonitor) + " / " +
-				                 key(_hotkeyRemoveMonitor) + "\tadd or remove a monitor\n" +
-				                 key(_hotkeyStats) + "\tstats\n" + key(_hotkeyDamage) +
-				                 "\tdamage painting\n" + key(_hotkeyMinimize) + "\tminimize\n" +
-				                 key(_hotkeyDisconnect) + "\tdisconnect",
+				                 (relativeMouse() ? "\tcapture or release mouse and keyboard\n"
+				                                  : "\tcapture or release the keyboard\n") +
+				                 key(_hotkeyFullscreen) + "\tfullscreen\n" +
+				                 key(_hotkeyAddMonitor) + " / " + key(_hotkeyRemoveMonitor) +
+				                 "\tadd or remove a monitor\n" + key(_hotkeyStats) + "\tstats\n" +
+				                 key(_hotkeyDamage) + "\tdamage painting\n" + key(_hotkeyMinimize) +
+				                 "\tminimize\n" + key(_hotkeyDisconnect) + "\tdisconnect",
 				             6000);
 				return keyboard_sync_state();
 			}
@@ -806,6 +805,27 @@ bool sdlInput::mouse_grab(Uint32 windowID, bool enable)
 	if (!_sdl->setGrabMouse(enable))
 		WLog_Print(_sdl->getWLog(), WLOG_WARN, "Failed to ungrab mouse");
 	return window->grabMouse(enable);
+}
+
+bool sdlInput::relativeMouse()
+{
+	return freerdp_client_use_relative_mouse_events(_sdl->common());
+}
+
+bool sdlInput::setGrab(Uint32 windowID, bool enable)
+{
+	if (relativeMouse() && !mouse_grab(windowID, enable))
+		return false;
+	return keyboard_grab(windowID, enable);
+}
+
+void sdlInput::notifyGrab(bool captured)
+{
+	const auto key = hotkeyName(_hotkeyGrab);
+	const std::string what = relativeMouse() ? "Mouse and keyboard" : "Keyboard";
+	_sdl->notify(captured ? what + " captured. Press " + key + " to release."
+	                      : what + " released. Press " + key + " to capture.",
+	             2000);
 }
 
 sdlInput::sdlInput(SdlContext* sdl)

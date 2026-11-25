@@ -745,6 +745,17 @@ int main(int argc, char* argv[])
 	 * which then wins, so the result is ignored. */
 	std::ignore = SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_MENU_VISIBILITY, "1");
 
+	/* /mouse:relative grabs the mouse in relative mode. The cursor stays visible, held where the
+	 * server puts its pointer, and the server says where with pointer position updates, which
+	 * the client ignores without GrabMouse. */
+	if (freerdp_settings_get_bool(settings, FreeRDP_MouseUseRelativeMove))
+	{
+		if (!SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE, "1") ||
+		    !SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_MODE_CENTER, "0") ||
+		    !freerdp_settings_set_bool(settings, FreeRDP_GrabMouse, TRUE))
+			return -1;
+	}
+
 #if defined(_WIN32)
 	/* Without vsync D3D11 drops a frame while one is still queued (DXGI_PRESENT_DO_NOT_WAIT). */
 	if (freerdp_settings_get_bool(settings, FreeRDP_RemoteApplicationMode) &&

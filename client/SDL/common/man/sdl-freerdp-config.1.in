@@ -107,6 +107,8 @@ If keyboard is grabbed the local system shortcuts do no longer work and are sent
 .br
 If the Mouse is grabbed (optional) local gesture detection does not work and the mouse might not be able to leave the RDP window. Mouse events are not altered.\&.
 .br
+With /mouse:relative and a server that takes relative mouse events, the mouse is grabbed too: it sends relative motion, for games and 3D views, and the cursor stays where the server puts its pointer. Both are grabbed when the window gets the focus and let go when it loses it\&.
+.br
 
 Default
 \fISDL_SCANCODE_G\fR\&.

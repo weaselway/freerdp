@@ -52,6 +52,12 @@ class sdlInput
 	[[nodiscard]] bool keyboard_grab(Uint32 windowID, bool enable);
 	[[nodiscard]] bool mouse_focus(Uint32 windowID);
 	[[nodiscard]] bool mouse_grab(Uint32 windowID, bool enable);
+	/* /mouse:relative with a server that takes relative motion. */
+	[[nodiscard]] bool relativeMouse();
+	/* The keyboard, and with relativeMouse() the mouse too. */
+	[[nodiscard]] bool setGrab(Uint32 windowID, bool enable);
+	/* Says that the grab hotkey captured or released. */
+	void notifyGrab(bool captured);
 
 	[[nodiscard]] static BOOL keyboard_set_indicators(rdpContext* context, UINT16 led_flags);
 	[[nodiscard]] static BOOL keyboard_set_ime_status(rdpContext* context, UINT16 imeId,

@@ -113,7 +113,7 @@ bool SdlTouch::handleEvent(SdlContext* sdl, const SDL_MouseMotionEvent& ev)
 		return FALSE;
 
 	const BOOL relative =
-	    freerdp_client_use_relative_mouse_events(sdl->common()) && !sdl->hasCursor();
+	    freerdp_client_use_relative_mouse_events(sdl->common()) && sdl->grabMouse();
 	auto x = static_cast<INT32>(relative ? ev.xrel : ev.x);
 	auto y = static_cast<INT32>(relative ? ev.yrel : ev.y);
 	return freerdp_client_send_button_event(sdl->common(), relative, PTR_FLAGS_MOVE, x, y);
@@ -181,7 +181,7 @@ bool SdlTouch::handleEvent(SdlContext* sdl, const SDL_MouseButtonEvent& ev)
 	}
 
 	const BOOL relative =
-	    freerdp_client_use_relative_mouse_events(sdl->common()) && !sdl->hasCursor();
+	    freerdp_client_use_relative_mouse_events(sdl->common()) && sdl->grabMouse();
 	auto x = static_cast<INT32>(relative ? 0 : ev.x);
 	auto y = static_cast<INT32>(relative ? 0 : ev.y);
 

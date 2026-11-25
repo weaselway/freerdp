@@ -502,7 +502,18 @@ bool sdlDispContext::handleEvent(const SDL_WindowEvent& ev)
 				return false;
 			return _sdl->getInputChannelContext().keyboard_focus_in();
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
+			if (_sdl->getInputChannelContext().relativeMouse())
+			{
+				if (!_sdl->getInputChannelContext().setGrab(ev.windowID, true))
+					return false;
+				/* The mouse cannot leave the window now; say how to get it back. */
+				_sdl->getInputChannelContext().notifyGrab(true);
+			}
 			return _sdl->getInputChannelContext().keyboard_focus_in();
+		case SDL_EVENT_WINDOW_FOCUS_LOST:
+			if (_sdl->getInputChannelContext().relativeMouse())
+				return _sdl->getInputChannelContext().setGrab(ev.windowID, false);
+			return true;
 
 		default:
 			return true;

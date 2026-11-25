@@ -262,8 +262,10 @@ bool SdlWindow::grabMouse(bool enable)
 {
 	if (!_window)
 		return false;
-	SDL_SetWindowMouseGrab(_window, enable);
-	return true;
+	/* The rect held the cursor where the server's pointer was. */
+	if (!enable && !SDL_SetWindowMouseRect(_window, nullptr))
+		return false;
+	return SDL_SetWindowRelativeMouseMode(_window, enable);
 }
 
 void SdlWindow::setBordered(bool bordered)

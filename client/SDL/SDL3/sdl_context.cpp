@@ -1534,7 +1534,14 @@ bool SdlContext::moveMouseTo(const SDL_FPoint& pos)
 
 	const auto id = SDL_GetWindowID(window);
 	const auto spos = pixelToScreen(id, pos);
+	/* In relative mode the warp only sets where SDL puts the cursor on release. */
 	SDL_WarpMouseInWindow(window, spos.x, spos.y);
+	/* In relative mode the cursor is only for show: held where the server's pointer is. */
+	if (grabMouse())
+	{
+		const SDL_Rect r{ static_cast<int>(spos.x), static_cast<int>(spos.y), 1, 1 };
+		std::ignore = SDL_SetWindowMouseRect(window, &r);
+	}
 	return true;
 }
 

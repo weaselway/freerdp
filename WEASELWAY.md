@@ -60,6 +60,12 @@ again, or `cmake --build build/freerdp`.
   and sends what moves past the edge as RDP relative mouse events
   (`client/SDL/SDL3/sdl_win32_edge_push.cpp`).
 
+- With `/mouse:relative` the SDL3 client grabs the mouse in SDL's relative
+  mode while a window has the focus, and the grab hotkey toggles it. The
+  cursor stays visible: a 1x1 mouse rect holds it at the position the
+  server reports. FreeRDP takes those reports only with `GrabMouse` set, so
+  `/mouse:relative` sets it.
+
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
   that.
