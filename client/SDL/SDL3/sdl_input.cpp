@@ -814,9 +814,33 @@ bool sdlInput::relativeMouse()
 
 bool sdlInput::setGrab(Uint32 windowID, bool enable)
 {
-	if (relativeMouse() && !mouse_grab(windowID, enable))
+	if (!relativeMouse())
+		return keyboard_grab(windowID, enable);
+	if (!mouse_grab(windowID, enable))
 		return false;
+	_sdl->setHint(enable ? std::string() : notCapturedHint());
 	return keyboard_grab(windowID, enable);
+}
+
+std::string sdlInput::notCapturedHint() const
+{
+	return "Mouse not captured. Press " + hotkeyName(_hotkeyGrab) + " to capture.";
+}
+
+bool sdlInput::connected()
+{
+	if (!relativeMouse())
+		return true;
+	auto window = SDL_GetKeyboardFocus();
+	if (!window)
+	{
+		_sdl->setHint(notCapturedHint());
+		return true;
+	}
+	if (!setGrab(SDL_GetWindowID(window), true))
+		return false;
+	notifyGrab(true);
+	return true;
 }
 
 void sdlInput::notifyGrab(bool captured)

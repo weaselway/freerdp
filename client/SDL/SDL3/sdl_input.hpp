@@ -58,6 +58,10 @@ class sdlInput
 	[[nodiscard]] bool setGrab(Uint32 windowID, bool enable);
 	/* Says that the grab hotkey captured or released. */
 	void notifyGrab(bool captured);
+	/* With relativeMouse(), grabs if a window has the focus and shows the hint
+	 * otherwise. The focus can come before the server says that it takes relative
+	 * motion. SDL thread, once connected. */
+	[[nodiscard]] bool connected();
 
 	[[nodiscard]] static BOOL keyboard_set_indicators(rdpContext* context, UINT16 led_flags);
 	[[nodiscard]] static BOOL keyboard_set_ime_status(rdpContext* context, UINT16 imeId,
@@ -76,6 +80,8 @@ class sdlInput
 	[[nodiscard]] UINT32 scancode_to_rdp(Uint32 scancode);
 	/* The hotkey for scancode, for people: "Right Ctrl+Right Shift+G". */
 	[[nodiscard]] std::string hotkeyName(uint32_t scancode) const;
+	/* Shown while relativeMouse() has the mouse not grabbed. */
+	[[nodiscard]] std::string notCapturedHint() const;
 
 	SdlContext* _sdl = nullptr;
 	Uint32 _lastWindowID = 0;

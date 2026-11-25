@@ -350,6 +350,10 @@ static bool SDLCALL sdl_win32_message_hook(void* userdata, MSG* msg)
 					case SDL_EVENT_USER_HIDE_NOTIFICATION:
 						sdl->hideNotification(static_cast<Uint32>(windowEvent.user.code));
 						break;
+					case SDL_EVENT_USER_CONNECTED:
+						if (!sdl->getInputChannelContext().connected())
+							throw ErrorMsg{ -1, windowEvent.type, "sdlInput::connected" };
+						break;
 					case SDL_EVENT_USER_QUIT:
 					default:
 						break;

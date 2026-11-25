@@ -407,7 +407,7 @@ BOOL SdlContext::postConnect(freerdp* instance)
 	                        true))
 		return FALSE;
 	sdl->setConnected(true);
-	return TRUE;
+	return sdl_push_user_event(SDL_EVENT_USER_CONNECTED);
 }
 
 /* This function is called whether a session ends by failure or success.

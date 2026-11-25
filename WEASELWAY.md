@@ -64,7 +64,10 @@ again, or `cmake --build build/freerdp`.
   mode while a window has the focus, and the grab hotkey toggles it. The
   cursor stays visible: a 1x1 mouse rect holds it at the position the
   server reports. FreeRDP takes those reports only with `GrabMouse` set, so
-  `/mouse:relative` sets it.
+  `/mouse:relative` sets it. While the mouse is not grabbed, a hint at the
+  bottom of each window says how to grab it. The window can get the focus
+  before the server's capabilities say that it takes relative motion, so the
+  client checks the focus again once connected.
 
 - On aarch64 hosts the mingw gcc isn't in the binary cache, so the first
   `nix develop` compiles it (two gcc builds). It is cached in the store after
